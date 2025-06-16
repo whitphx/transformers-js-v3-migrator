@@ -2,10 +2,15 @@ import os
 import re
 from typing import Optional
 from ..migration_types import BaseMigration, MigrationType, MigrationResult, MigrationStatus
+from ..lib.ai_readme_migrator import AIReadmeMigrator
 
 
 class ReadmeSamplesMigration(BaseMigration):
-    """Migration for updating README.md sample code"""
+    """Migration for updating README.md sample code using AI"""
+    
+    def __init__(self):
+        super().__init__()
+        self.ai_migrator = AIReadmeMigrator()
     
     @property
     def migration_type(self) -> MigrationType:
@@ -13,7 +18,7 @@ class ReadmeSamplesMigration(BaseMigration):
     
     @property
     def description(self) -> str:
-        return "Update README.md sample code from Transformers.js v2 to v3"
+        return "Update README.md sample code from Transformers.js v2 to v3 using AI"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
         """Check if README.md exists and contains v2 code"""
@@ -32,15 +37,15 @@ class ReadmeSamplesMigration(BaseMigration):
             return False
     
     def apply_migration(self, repo_path: str, repo_id: str) -> MigrationResult:
-        """Apply README.md migration"""
+        """Apply README.md migration using AI"""
         readme_path = os.path.join(repo_path, "README.md")
         
         try:
             with open(readme_path, 'r', encoding='utf-8') as f:
                 original_content = f.read()
             
-            # Mock AI service call for now
-            updated_content = self._mock_ai_migration(original_content, repo_id)
+            # Use AI service for migration
+            updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id)
             
             if updated_content and updated_content != original_content:
                 with open(readme_path, 'w', encoding='utf-8') as f:
@@ -86,41 +91,3 @@ class ReadmeSamplesMigration(BaseMigration):
         
         return False
     
-    def _mock_ai_migration(self, content: str, repo_id: str) -> Optional[str]:
-        """Mock AI service call to migrate README content from v2 to v3
-        
-        TODO: Replace with actual AI service integration
-        """
-        self.logger.info(f"[MOCK] Calling AI service to migrate README for {repo_id}")
-        
-        # Simple regex-based migration for now
-        updated_content = content
-        
-        # Update package imports
-        updated_content = re.sub(
-            r'@xenova/transformers',
-            '@huggingface/transformers',
-            updated_content
-        )
-        
-        # Update CDN links
-        updated_content = re.sub(
-            r'https://cdn\.jsdelivr\.net/npm/@xenova/transformers(@[\d\.]+)?',
-            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3',
-            updated_content
-        )
-        
-        # Update import statements
-        updated_content = re.sub(
-            r'from\s+[\'"]@xenova/transformers[\'"]',
-            'from "@huggingface/transformers"',
-            updated_content
-        )
-        
-        # Add migration notice
-        if updated_content != content:
-            migration_notice = "<!-- This README has been automatically migrated to Transformers.js v3 -->\n"
-            updated_content = migration_notice + updated_content
-        
-        self.logger.info(f"[MOCK] AI migration completed for {repo_id}")
-        return updated_content

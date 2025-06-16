@@ -48,7 +48,10 @@ Always use the test repository `whitphx/dummy-transformerjs-model-000` for testi
 
 The tool uses a pluggable migration system where each migration type inherits from `BaseMigration`:
 
-- **ReadmeSamplesMigration**: Converts `@xenova/transformers` to `@huggingface/transformers` in README files
+- **ReadmeSamplesMigration**: AI-powered migration of README.md files from Transformers.js v2 to v3
+  - Uses Anthropic Claude API for intelligent code transformation
+  - Falls back to rule-based migration if AI is unavailable
+  - Handles installation sections, modern JavaScript patterns, and improved comments
 - **Future migrations**: Model binaries, config files, example scripts (framework ready)
 
 Each migration type creates separate pull requests and tracks progress independently.
@@ -69,6 +72,7 @@ Sessions are identified by a hash of search parameters (org, repo-name, exclude-
 ## Environment Variables
 
 - `HF_TOKEN`: Hugging Face token for API access (can also be passed via `--token`)
+- `ANTHROPIC_API_KEY`: Anthropic API key for AI-powered README migrations (optional, falls back to rule-based migration)
 
 ## File Operations
 
