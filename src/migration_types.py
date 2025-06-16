@@ -59,7 +59,7 @@ class BaseMigration(ABC):
         pass
     
     @abstractmethod
-    def apply_migration(self, repo_path: str, repo_id: str) -> MigrationResult:
+    def apply_migration(self, repo_path: str, repo_id: str, interactive: bool = True) -> MigrationResult:
         """Apply the migration and return the result"""
         pass
     

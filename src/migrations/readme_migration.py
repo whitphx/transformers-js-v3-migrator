@@ -36,7 +36,7 @@ class ReadmeSamplesMigration(BaseMigration):
             self.logger.error(f"Error checking README for {repo_id}: {e}")
             return False
     
-    def apply_migration(self, repo_path: str, repo_id: str) -> MigrationResult:
+    def apply_migration(self, repo_path: str, repo_id: str, interactive: bool = True) -> MigrationResult:
         """Apply README.md migration using AI"""
         readme_path = os.path.join(repo_path, "README.md")
         
@@ -49,7 +49,7 @@ class ReadmeSamplesMigration(BaseMigration):
                 self.ai_migrator = AIReadmeMigrator()
             
             # Use AI service for migration
-            updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id)
+            updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id, interactive=interactive)
             
             if updated_content and updated_content != original_content:
                 with open(readme_path, 'w', encoding='utf-8') as f:

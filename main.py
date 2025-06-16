@@ -18,7 +18,8 @@ def cli():
 @click.option('--repo-name', help='Filter repositories by name pattern (supports wildcards)')
 @click.option('--exclude-org', multiple=True, help='Exclude repositories from these organizations')
 @click.option('--resume', is_flag=True, help='Resume from existing session')
-def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool):
+@click.option('--non-interactive', is_flag=True, help='Run without user prompts (auto-approve AI changes)')
+def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool, non_interactive: bool):
     """Run the migration process"""
     if dry_run and preview:
         click.echo("Error: Cannot use both --dry-run and --preview at the same time")
@@ -41,7 +42,8 @@ def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo
         org_filter=org,
         repo_name_filter=repo_name,
         exclude_orgs=list(exclude_org),
-        resume=resume
+        resume=resume,
+        interactive=not non_interactive
     )
 
 

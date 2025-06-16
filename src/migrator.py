@@ -32,7 +32,7 @@ class TransformersJSMigrator:
 
     def run_migration(self, limit: int = 10, org_filter: Optional[str] = None, 
                      repo_name_filter: Optional[str] = None, exclude_orgs: Optional[List[str]] = None,
-                     resume: bool = False):
+                     resume: bool = False, interactive: bool = True):
         """Run the migration process for Transformers.js v2 to v3"""
         
         # Handle preview mode - no session tracking
@@ -102,7 +102,7 @@ class TransformersJSMigrator:
                 self.session_manager.update_repo_status(session_id, repo, RepoStatus.IN_PROGRESS)
                 
                 # Migrate repository
-                success, pr_url, error_msg = self.migrate_repository(repo, session_id)
+                success, pr_url, error_msg = self.migrate_repository(repo, session_id, interactive)
                 
                 if success:
                     self.session_manager.update_repo_status(
@@ -136,7 +136,7 @@ class TransformersJSMigrator:
             else:
                 self.logger.info(f"Use 'python main.py migrate --resume' to retry failed repositories")
     
-    def migrate_repository(self, repo_id: str, session_id: str) -> tuple[bool, Optional[str], Optional[str]]:
+    def migrate_repository(self, repo_id: str, session_id: str, interactive: bool = True) -> tuple[bool, Optional[str], Optional[str]]:
         """Migrate a single repository
         
         Returns:
@@ -182,7 +182,7 @@ class TransformersJSMigrator:
                             continue
                         
                         # Apply the migration
-                        result = migration.apply_migration(repo_path, repo_id)
+                        result = migration.apply_migration(repo_path, repo_id, interactive)
                         
                         if result.changes_made and self.mode == "normal":
                             # Upload changes for this specific migration using HF Hub
