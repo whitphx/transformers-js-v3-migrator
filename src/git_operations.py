@@ -133,11 +133,3 @@ You can view the changes at: https://huggingface.co/{repo_id}/commit/{branch_nam
             # Return a fallback URL for manual PR creation
             return f"https://huggingface.co/{repo_id}/discussions/new"
 
-    def cleanup_repo(self, repo_path: Optional[str]):
-        """Clean up cloned repository"""
-        if repo_path and os.path.exists(repo_path):
-            try:
-                shutil.rmtree(repo_path)
-                self.logger.info(f"Cleaned up repository at {repo_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to cleanup {repo_path}: {e}")

@@ -151,100 +151,95 @@ class TransformersJSMigrator:
             # Download repository
             repo_path = self.git_ops.download_repo(repo_id)
             
-            try:
-                # Get applicable migrations for this repository
-                applicable_migrations = migration_registry.get_applicable_migrations(repo_path, repo_id)
+            # Get applicable migrations for this repository
+            applicable_migrations = migration_registry.get_applicable_migrations(repo_path, repo_id)
+            
+            if not applicable_migrations:
+                self.logger.info(f"No applicable migrations for {repo_id}")
+                return True, None, None
+            
+            overall_success = True
+            pr_urls = []
+            errors = []
+            
+            # Use the main session_id from the run_migration method
+            # Process each migration type separately  
+            for migration in applicable_migrations:
                 
-                if not applicable_migrations:
-                    self.logger.info(f"No applicable migrations for {repo_id}")
-                    return True, None, None
-                
-                overall_success = True
-                pr_urls = []
-                errors = []
-                
-                # Use the main session_id from the run_migration method
-                # Process each migration type separately  
-                for migration in applicable_migrations:
+                try:
+                    # Update migration status to in_progress
+                    self.session_manager.update_migration_status(
+                        session_id, repo_id, migration.migration_type, MigrationStatus.IN_PROGRESS
+                    )
                     
-                    try:
-                        # Update migration status to in_progress
+                    if self.mode == "dry_run":
+                        self.logger.info(f"[DRY RUN] Would apply {migration.migration_type.value} migration for {repo_id}")
+                        # Mock successful migration for dry run
                         self.session_manager.update_migration_status(
-                            session_id, repo_id, migration.migration_type, MigrationStatus.IN_PROGRESS
+                            session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED
                         )
-                        
-                        if self.mode == "dry_run":
-                            self.logger.info(f"[DRY RUN] Would apply {migration.migration_type.value} migration for {repo_id}")
-                            # Mock successful migration for dry run
-                            self.session_manager.update_migration_status(
-                                session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED
-                            )
-                            continue
-                        
-                        # Apply the migration
-                        result = migration.apply_migration(repo_path, repo_id, interactive)
-                        
-                        if result.changes_made and self.mode == "normal":
-                            # Upload changes for this specific migration using HF Hub
-                            if self.git_ops.upload_changes(
-                                repo_path, repo_id, 
-                                migration.migration_type.value,
+                        continue
+                    
+                    # Apply the migration
+                    result = migration.apply_migration(repo_path, repo_id, interactive)
+                    
+                    if result.changes_made and self.mode == "normal":
+                        # Upload changes for this specific migration using HF Hub
+                        if self.git_ops.upload_changes(
+                            repo_path, repo_id, 
+                            migration.migration_type.value,
+                            migration.get_pr_title(),
+                            migration.get_pr_description(),
+                            result.files_modified
+                        ):
+                            # Create pull request for this migration
+                            pr_url = self.git_ops.create_pull_request(
+                                repo_id, 
                                 migration.get_pr_title(),
                                 migration.get_pr_description(),
-                                result.files_modified
-                            ):
-                                # Create pull request for this migration
-                                pr_url = self.git_ops.create_pull_request(
-                                    repo_id, 
-                                    migration.get_pr_title(),
-                                    migration.get_pr_description(),
-                                    migration.migration_type.value
-                                )
-                                pr_urls.append(pr_url)
-                                
-                                # Update migration status with PR URL
-                                self.session_manager.update_migration_status(
-                                    session_id, repo_id, migration.migration_type, 
-                                    MigrationStatus.COMPLETED, pr_url=pr_url,
-                                    files_modified=result.files_modified
-                                )
-                                
-                                self.logger.info(f"✓ {migration.migration_type.value} migration completed for {repo_id}")
-                            else:
-                                error_msg = f"Failed to upload {migration.migration_type.value} changes"
-                                errors.append(error_msg)
-                                self.session_manager.update_migration_status(
-                                    session_id, repo_id, migration.migration_type, 
-                                    MigrationStatus.FAILED, error_message=error_msg
-                                )
-                                overall_success = False
-                        else:
-                            # No changes or dry run mode
-                            status = MigrationStatus.COMPLETED if result.changes_made else MigrationStatus.SKIPPED
+                                migration.migration_type.value
+                            )
+                            pr_urls.append(pr_url)
+                            
+                            # Update migration status with PR URL
                             self.session_manager.update_migration_status(
-                                session_id, repo_id, migration.migration_type, status,
+                                session_id, repo_id, migration.migration_type, 
+                                MigrationStatus.COMPLETED, pr_url=pr_url,
                                 files_modified=result.files_modified
                             )
                             
-                    except Exception as e:
-                        error_msg = f"Error in {migration.migration_type.value} migration: {str(e)}"
-                        errors.append(error_msg)
+                            self.logger.info(f"✓ {migration.migration_type.value} migration completed for {repo_id}")
+                        else:
+                            error_msg = f"Failed to upload {migration.migration_type.value} changes"
+                            errors.append(error_msg)
+                            self.session_manager.update_migration_status(
+                                session_id, repo_id, migration.migration_type, 
+                                MigrationStatus.FAILED, error_message=error_msg
+                            )
+                            overall_success = False
+                    else:
+                        # No changes or dry run mode
+                        status = MigrationStatus.COMPLETED if result.changes_made else MigrationStatus.SKIPPED
                         self.session_manager.update_migration_status(
-                            session_id, repo_id, migration.migration_type, 
-                            MigrationStatus.FAILED, error_message=error_msg
+                            session_id, repo_id, migration.migration_type, status,
+                            files_modified=result.files_modified
                         )
-                        overall_success = False
-                        self.logger.error(error_msg)
-                
-                # Return overall result
-                if overall_success:
-                    return True, pr_urls[0] if pr_urls else None, None
-                else:
-                    return False, None, "; ".join(errors)
-                    
-            finally:
-                # Cleanup
-                self.git_ops.cleanup_repo(repo_path)
+                        
+                except Exception as e:
+                    error_msg = f"Error in {migration.migration_type.value} migration: {str(e)}"
+                    errors.append(error_msg)
+                    self.session_manager.update_migration_status(
+                        session_id, repo_id, migration.migration_type, 
+                        MigrationStatus.FAILED, error_message=error_msg
+                    )
+                    overall_success = False
+                    self.logger.error(error_msg)
+            
+            # Return overall result
+            if overall_success:
+                return True, pr_urls[0] if pr_urls else None, None
+            else:
+                return False, None, "; ".join(errors)
                 
         except Exception as e:
             return False, None, str(e)
