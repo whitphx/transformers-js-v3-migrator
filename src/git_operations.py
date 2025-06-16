@@ -9,29 +9,28 @@ import logging
 class GitOperations:
     def __init__(self, token: Optional[str] = None):
         self.logger = logging.getLogger(__name__)
-        self.temp_dir = None
+        self.repo_path = None
         self.token = token
         self.hf_api = HfApi(token=token)
 
     def download_repo(self, repo_id: str) -> str:
         """Download a repository from Hugging Face Hub"""
-        self.temp_dir = tempfile.mkdtemp(prefix=f"transformersjs_migration_{repo_id.replace('/', '_')}_")
-        
         try:
-            self.logger.info(f"Downloading {repo_id} to {self.temp_dir}")
+            self.logger.info(f"Downloading {repo_id}")
             
             # Use HF Hub's snapshot_download to get repository files
-            snapshot_download(
+            # snapshot_download handles caching automatically and returns the local path
+            repo_path = snapshot_download(
                 repo_id=repo_id,
-                local_dir=self.temp_dir,
                 token=self.token,
                 repo_type="model"
             )
             
-            return self.temp_dir
+            self.repo_path = repo_path
+            self.logger.info(f"Downloaded {repo_id} to {repo_path}")
+            return repo_path
         except Exception as e:
             self.logger.error(f"Failed to download {repo_id}: {e}")
-            self.cleanup_repo(self.temp_dir)
             raise
 
     def upload_changes(self, repo_path: str, repo_id: str, migration_type_name: str, 

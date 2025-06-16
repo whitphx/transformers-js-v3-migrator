@@ -10,7 +10,7 @@ class ReadmeSamplesMigration(BaseMigration):
     
     def __init__(self):
         super().__init__()
-        self.ai_migrator = AIReadmeMigrator()
+        self.ai_migrator = None
     
     @property
     def migration_type(self) -> MigrationType:
@@ -43,6 +43,10 @@ class ReadmeSamplesMigration(BaseMigration):
         try:
             with open(readme_path, 'r', encoding='utf-8') as f:
                 original_content = f.read()
+            
+            # Initialize AI migrator if not already done
+            if self.ai_migrator is None:
+                self.ai_migrator = AIReadmeMigrator()
             
             # Use AI service for migration
             updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id)
