@@ -186,20 +186,16 @@ class TransformersJSMigrator:
                         
                         if result.changes_made and self.mode == "normal":
                             # Upload changes for this specific migration using HF Hub
-                            if self.git_ops.upload_changes(
+                            pr_url = self.git_ops.upload_changes(
                                 repo_path, repo_id, 
                                 migration.migration_type.value,
                                 migration.get_pr_title(),
                                 migration.get_pr_description(),
-                                result.files_modified
-                            ):
-                                # Create pull request for this migration
-                                pr_url = self.git_ops.create_pull_request(
-                                    repo_id, 
-                                    migration.get_pr_title(),
-                                    migration.get_pr_description(),
-                                    migration.migration_type.value
-                                )
+                                result.files_modified,
+                                interactive
+                            )
+                            
+                            if pr_url:
                                 pr_urls.append(pr_url)
                                 
                                 # Update migration status with PR URL
