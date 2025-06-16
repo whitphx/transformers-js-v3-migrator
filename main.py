@@ -58,7 +58,7 @@ def sessions():
     
     for session in sessions_list:
         stats = session.get("stats", {})
-        config = session.get("config", {})
+        config = session.get("config") or {}
         
         click.echo(f"\nSession ID: {session['session_id']}")
         click.echo(f"Created: {session.get('created_at', 'Unknown')}")
@@ -84,7 +84,7 @@ def status(session_id: str):
         return
     
     stats = summary["stats"]
-    config = summary.get("config", {})
+    config = summary.get("config") or {}
     
     click.echo(f"\nSession: {session_id}")
     click.echo("=" * 50)
