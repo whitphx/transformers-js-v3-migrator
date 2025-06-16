@@ -102,7 +102,7 @@ class TransformersJSMigrator:
                 self.session_manager.update_repo_status(session_id, repo, RepoStatus.IN_PROGRESS)
                 
                 # Migrate repository
-                success, pr_url, error_msg = self.migrate_repository(repo)
+                success, pr_url, error_msg = self.migrate_repository(repo, session_id)
                 
                 if success:
                     self.session_manager.update_repo_status(
@@ -136,7 +136,7 @@ class TransformersJSMigrator:
             else:
                 self.logger.info(f"Use 'python main.py migrate --resume' to retry failed repositories")
     
-    def migrate_repository(self, repo_id: str) -> tuple[bool, Optional[str], Optional[str]]:
+    def migrate_repository(self, repo_id: str, session_id: str) -> tuple[bool, Optional[str], Optional[str]]:
         """Migrate a single repository
         
         Returns:
@@ -163,6 +163,7 @@ class TransformersJSMigrator:
                 pr_urls = []
                 errors = []
                 
+                # Use the main session_id from the run_migration method
                 # Process each migration type separately  
                 for migration in applicable_migrations:
                     
