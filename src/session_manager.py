@@ -131,8 +131,10 @@ class SessionManager:
         session_data = self.load_session(session_id)
         
         # Update config if this is a new session or config has changed
-        if session_data.get("config") != asdict(config):
-            session_data["config"] = asdict(config)
+        config_dict = asdict(config)
+        if session_data.get("config") != config_dict:
+            session_data["config"] = config_dict
+            self.save_session(session_id, session_data)
             self.logger.info(f"Updated config for session {session_id}")
         
         self.logger.info(f"Initialized session: {session_id}")

@@ -67,7 +67,7 @@ def sessions():
         click.echo(f"\nSession ID: {session['session_id']}")
         click.echo(f"Created: {session.get('created_at', 'Unknown')}")
         click.echo(f"Updated: {session.get('updated_at', 'Unknown')}")
-        click.echo(f"Config: org={config.get('org_filter', 'all')}, name={config.get('repo_name_filter', 'all')}")
+        click.echo(f"Config: org={config.get('org_filter') or 'all'}, name={config.get('repo_name_filter') or 'all'}")
         click.echo(f"Progress: {stats.get('completed', 0)}/{stats.get('total', 0)} completed, {stats.get('failed', 0)} failed")
         
         if session.get("recent_failures"):
