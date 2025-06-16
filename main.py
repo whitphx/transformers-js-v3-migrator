@@ -1,4 +1,5 @@
 import click
+import os
 from src.migrator import TransformersJSMigrator
 
 
@@ -12,7 +13,7 @@ def cli():
 @click.option('--dry-run', is_flag=True, help='Run without making actual changes but track progress')
 @click.option('--preview', is_flag=True, help='Preview mode - no changes, no tracking')
 @click.option('--limit', default=10, help='Limit number of repositories to process')
-@click.option('--token', help='Hugging Face token for API access')
+@click.option('--token', help='Hugging Face token for API access (or set HF_TOKEN env var)')
 @click.option('--org', help='Filter repositories by organization name')
 @click.option('--repo-name', help='Filter repositories by name pattern (supports wildcards)')
 @click.option('--exclude-org', multiple=True, help='Exclude repositories from these organizations')
@@ -23,6 +24,9 @@ def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo
         click.echo("Error: Cannot use both --dry-run and --preview at the same time")
         return
     
+    # Get token from CLI argument or environment variable
+    hf_token = token or os.getenv('HF_TOKEN')
+    
     # Determine mode
     if preview:
         mode = "preview"
@@ -31,7 +35,7 @@ def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo
     else:
         mode = "normal"
     
-    migrator = TransformersJSMigrator(token=token, mode=mode)
+    migrator = TransformersJSMigrator(token=hf_token, mode=mode)
     migrator.run_migration(
         limit=limit,
         org_filter=org,
