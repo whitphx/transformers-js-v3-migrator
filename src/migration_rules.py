@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 
@@ -9,26 +9,18 @@ class MigrationRules:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    def apply_migrations(self, repo_path: str) -> bool:
+    def apply_migrations(self, repo_path: str, repo_id: str) -> bool:
         """Apply all migration rules to the repository"""
         changes_made = False
         
-        # Check for files that need migration
-        for root, dirs, files in os.walk(repo_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                
-                if file == "config.json":
-                    if self.migrate_config_json(file_path):
-                        changes_made = True
-                
-                elif file == "README.md":
-                    if self.migrate_readme(file_path):
-                        changes_made = True
-                
-                elif file.endswith(('.js', '.html', '.md')):
-                    if self.migrate_code_examples(file_path):
-                        changes_made = True
+        # Focus on README.md migration for now
+        readme_path = os.path.join(repo_path, "README.md")
+        if os.path.exists(readme_path):
+            if self.migrate_readme(readme_path, repo_id):
+                changes_made = True
+                self.logger.info(f"Updated README.md for {repo_id}")
+        else:
+            self.logger.info(f"No README.md found for {repo_id}")
         
         return changes_made
 
@@ -58,41 +50,90 @@ class MigrationRules:
         
         return False
 
-    def migrate_readme(self, readme_path: str) -> bool:
-        """Migrate README.md for v3 compatibility"""
+    def migrate_readme(self, readme_path: str, repo_id: str) -> bool:
+        """Migrate README.md for v3 compatibility using AI service (mocked for now)"""
         try:
             with open(readme_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
             original_content = content
             
-            # Update import statements
-            content = re.sub(
-                r'import\s+{\s*([^}]+)\s*}\s+from\s+[\'"]@xenova/transformers[\'"]',
-                r'import { \1 } from "@huggingface/transformers"',
-                content
-            )
+            # Check if README contains Transformers.js v2 code
+            if not self._contains_transformersjs_v2_code(content):
+                self.logger.info(f"README.md for {repo_id} doesn't contain v2 code, skipping")
+                return False
             
-            # Update CDN links
-            content = re.sub(
-                r'https://cdn\.jsdelivr\.net/npm/@xenova/transformers@[\d\.]+',
-                'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3',
-                content
-            )
+            self.logger.info(f"Found Transformers.js v2 code in README.md for {repo_id}")
             
-            # Update code examples
-            content = self.update_code_examples_in_text(content)
+            # Mock AI service call for now
+            updated_content = self._mock_ai_migration(content, repo_id)
             
-            if content != original_content:
+            if updated_content and updated_content != original_content:
                 with open(readme_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                self.logger.info(f"Updated README.md at {readme_path}")
+                    f.write(updated_content)
+                self.logger.info(f"Updated README.md for {repo_id} using AI migration")
                 return True
+            else:
+                self.logger.info(f"No changes needed for README.md in {repo_id}")
+                return False
                 
         except Exception as e:
-            self.logger.error(f"Error migrating README at {readme_path}: {e}")
+            self.logger.error(f"Error migrating README for {repo_id}: {e}")
+            return False
+
+    def _contains_transformersjs_v2_code(self, content: str) -> bool:
+        """Check if content contains Transformers.js v2 specific code"""
+        v2_patterns = [
+            r'@xenova/transformers',
+            r'from\s+[\'"]@xenova/transformers[\'"]',
+            r'import.*@xenova/transformers',
+            r'cdn\.jsdelivr\.net/npm/@xenova/transformers'
+        ]
+        
+        for pattern in v2_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
         
         return False
+
+    def _mock_ai_migration(self, content: str, repo_id: str) -> Optional[str]:
+        """Mock AI service call to migrate README content from v2 to v3
+        
+        TODO: Replace with actual AI service integration
+        """
+        self.logger.info(f"[MOCK] Calling AI service to migrate README for {repo_id}")
+        
+        # Simple regex-based migration for now
+        updated_content = content
+        
+        # Update package imports
+        updated_content = re.sub(
+            r'@xenova/transformers',
+            '@huggingface/transformers',
+            updated_content
+        )
+        
+        # Update CDN links
+        updated_content = re.sub(
+            r'https://cdn\.jsdelivr\.net/npm/@xenova/transformers(@[\d\.]+)?',
+            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3',
+            updated_content
+        )
+        
+        # Update import statements
+        updated_content = re.sub(
+            r'from\s+[\'"]@xenova/transformers[\'"]',
+            'from "@huggingface/transformers"',
+            updated_content
+        )
+        
+        # Add migration notice
+        if updated_content != content:
+            migration_notice = "\n<!-- This README has been automatically migrated to Transformers.js v3 -->\n"
+            updated_content = migration_notice + updated_content
+        
+        self.logger.info(f"[MOCK] AI migration completed for {repo_id}")
+        return updated_content
 
     def migrate_code_examples(self, file_path: str) -> bool:
         """Migrate code examples in JS/HTML files"""

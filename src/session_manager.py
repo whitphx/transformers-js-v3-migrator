@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, asdict
 from enum import Enum
 import logging
+from .migration_types import MigrationType, MigrationStatus
 
 
 class RepoStatus(Enum):
@@ -17,12 +18,30 @@ class RepoStatus(Enum):
 
 
 @dataclass
+class MigrationProgress:
+    migration_type: str  # MigrationType.value
+    status: str  # MigrationStatus.value
+    timestamp: str
+    error_message: Optional[str] = None
+    pr_url: Optional[str] = None
+    files_modified: List[str] = None
+    
+    def __post_init__(self):
+        if self.files_modified is None:
+            self.files_modified = []
+
+
+@dataclass
 class RepoProgress:
     repo_id: str
     status: RepoStatus
     timestamp: str
     error_message: Optional[str] = None
-    pr_url: Optional[str] = None
+    migrations: Dict[str, MigrationProgress] = None  # migration_type -> progress
+    
+    def __post_init__(self):
+        if self.migrations is None:
+            self.migrations = {}
 
 
 @dataclass
@@ -76,7 +95,8 @@ class SessionManager:
                     "completed": 0,
                     "failed": 0,
                     "skipped": 0,
-                    "pending": 0
+                    "pending": 0,
+                    "migrations": {}  # migration_type -> {completed: 0, failed: 0, pending: 0}
                 }
             }
         
@@ -152,20 +172,23 @@ class SessionManager:
         return unprocessed
 
     def update_repo_status(self, session_id: str, repo_id: str, status: RepoStatus, 
-                          error_message: Optional[str] = None, pr_url: Optional[str] = None):
-        """Update the status of a repository in the session"""
+                          error_message: Optional[str] = None):
+        """Update the overall status of a repository in the session"""
         session_data = self.load_session(session_id)
         
         # Ensure repos dict exists
         if "repos" not in session_data:
             session_data["repos"] = {}
         
+        # Get existing repo progress or create new one
+        existing_data = session_data["repos"].get(repo_id, {})
+        
         progress = RepoProgress(
             repo_id=repo_id,
             status=status,
             timestamp=datetime.now().isoformat(),
             error_message=error_message,
-            pr_url=pr_url
+            migrations=existing_data.get("migrations", {})
         )
         
         # Convert enum to string for JSON serialization
@@ -184,6 +207,69 @@ class SessionManager:
         
         self.save_session(session_id, session_data)
 
+    def update_migration_status(self, session_id: str, repo_id: str, migration_type: MigrationType,
+                               status: MigrationStatus, error_message: Optional[str] = None,
+                               pr_url: Optional[str] = None, files_modified: Optional[List[str]] = None):
+        """Update the status of a specific migration for a repository"""
+        session_data = self.load_session(session_id)
+        
+        # Ensure repos dict exists
+        if "repos" not in session_data:
+            session_data["repos"] = {}
+        
+        # Get existing repo data or create new one
+        if repo_id not in session_data["repos"]:
+            session_data["repos"][repo_id] = {
+                "repo_id": repo_id,
+                "status": RepoStatus.PENDING.value,
+                "timestamp": datetime.now().isoformat(),
+                "error_message": None,
+                "migrations": {}
+            }
+        
+        # Update migration progress
+        migration_progress = MigrationProgress(
+            migration_type=migration_type.value,
+            status=status.value,
+            timestamp=datetime.now().isoformat(),
+            error_message=error_message,
+            pr_url=pr_url,
+            files_modified=files_modified or []
+        )
+        
+        session_data["repos"][repo_id]["migrations"][migration_type.value] = asdict(migration_progress)
+        
+        # Update overall repo status based on migration statuses
+        self._update_repo_status_from_migrations(session_data, repo_id)
+        
+        # Update stats
+        self._update_session_stats(session_data)
+        
+        self.save_session(session_id, session_data)
+
+    def _update_repo_status_from_migrations(self, session_data: Dict, repo_id: str):
+        """Update overall repo status based on individual migration statuses"""
+        repo_data = session_data["repos"][repo_id]
+        migrations = repo_data.get("migrations", {})
+        
+        if not migrations:
+            return  # No migrations, keep current status
+        
+        migration_statuses = [m["status"] for m in migrations.values()]
+        
+        # If any migration failed, mark repo as failed
+        if any(status == MigrationStatus.FAILED.value for status in migration_statuses):
+            repo_data["status"] = RepoStatus.FAILED.value
+        # If all applicable migrations are completed or skipped, mark repo as completed
+        elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value] 
+                for status in migration_statuses):
+            repo_data["status"] = RepoStatus.COMPLETED.value
+        # If any migration is in progress, mark repo as in progress
+        elif any(status == MigrationStatus.IN_PROGRESS.value for status in migration_statuses):
+            repo_data["status"] = RepoStatus.IN_PROGRESS.value
+        else:
+            repo_data["status"] = RepoStatus.PENDING.value
+
     def _update_session_stats(self, session_data: Dict):
         """Update session statistics"""
         stats = {
@@ -191,9 +277,11 @@ class SessionManager:
             "completed": 0,
             "failed": 0,
             "skipped": 0,
-            "pending": 0
+            "pending": 0,
+            "migrations": {}
         }
         
+        # Count repo statuses
         for repo_data in session_data["repos"].values():
             status = repo_data["status"]
             if status == RepoStatus.COMPLETED.value:
@@ -204,6 +292,29 @@ class SessionManager:
                 stats["skipped"] += 1
             else:
                 stats["pending"] += 1
+            
+            # Count migration statuses
+            for migration_type, migration_data in repo_data.get("migrations", {}).items():
+                if migration_type not in stats["migrations"]:
+                    stats["migrations"][migration_type] = {
+                        "completed": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "pending": 0,
+                        "not_applicable": 0
+                    }
+                
+                migration_status = migration_data["status"]
+                if migration_status == MigrationStatus.COMPLETED.value:
+                    stats["migrations"][migration_type]["completed"] += 1
+                elif migration_status == MigrationStatus.FAILED.value:
+                    stats["migrations"][migration_type]["failed"] += 1
+                elif migration_status == MigrationStatus.SKIPPED.value:
+                    stats["migrations"][migration_type]["skipped"] += 1
+                elif migration_status == MigrationStatus.NOT_APPLICABLE.value:
+                    stats["migrations"][migration_type]["not_applicable"] += 1
+                else:
+                    stats["migrations"][migration_type]["pending"] += 1
         
         session_data["stats"] = stats
 
