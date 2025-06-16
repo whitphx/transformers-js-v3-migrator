@@ -1,7 +1,13 @@
 [project]
 name = "transformers-js-v3-migrator"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI agent for migrating Transformers.js v2 model repositories to v3"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "huggingface_hub>=0.20.0",
+    "GitPython>=3.1.40",
+    "requests>=2.31.0",
+    "pydantic>=2.5.0",
+    "click>=8.1.7",
+]
