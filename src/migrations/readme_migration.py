@@ -51,6 +51,16 @@ class ReadmeSamplesMigration(BaseMigration):
             # Use AI service for migration
             updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id, interactive=interactive)
             
+            # Handle special return value for user rejection with skip
+            if updated_content == "REJECT_SKIP":
+                self.logger.info(f"User rejected changes for README.md in {repo_id} - leaving undone for future attempts")
+                return MigrationResult(
+                    migration_type=self.migration_type,
+                    status=MigrationStatus.FAILED,  # Mark as failed so repo isn't added to global processed list
+                    changes_made=False,
+                    error_message="User declined changes (ns) - repository left undone for future attempts"
+                )
+            
             if updated_content and updated_content != original_content:
                 with open(readme_path, 'w', encoding='utf-8') as f:
                     f.write(updated_content)
