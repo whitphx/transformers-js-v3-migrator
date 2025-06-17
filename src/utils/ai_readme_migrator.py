@@ -6,25 +6,25 @@ from anthropic import Anthropic
 
 class AIReadmeMigrator:
     """AI-powered README migrator using external LLM API for Transformers.js v2 to v3 migration"""
-    
+
     def __init__(self, api_key: Optional[str] = None, verbose: bool = False):
         self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required for AI README migration")
-        
+
         self.client = Anthropic(api_key=self.api_key)
         self.verbose = verbose
         self.logger = logging.getLogger(__name__)
-    
+
     def migrate_readme_content(self, content: str, repo_id: str, interactive: bool = True) -> Optional[str]:
         """Migrate README content from Transformers.js v2 to v3 using AI"""
-        
+
         try:
             self.logger.info(f"Calling AI service to migrate README for {repo_id}")
-            
+
             # Create the migration prompt
             prompt = self._create_migration_prompt(content, repo_id)
-            
+
             # Call Claude API
             response = self.client.messages.create(
                 model="claude-3-haiku-20240307",
@@ -37,14 +37,14 @@ class AIReadmeMigrator:
                     }
                 ]
             )
-            
+
             migrated_content = response.content[0].text.strip()
-            
+
             # Validate the response
             if not self._validate_migration(content, migrated_content):
                 self.logger.error(f"AI README migration validation failed for {repo_id}")
                 return None
-            
+
             # Interactive mode: show changes and ask for confirmation
             if interactive:
                 user_choice = self._show_changes_and_confirm(content, migrated_content, repo_id)
@@ -60,10 +60,10 @@ class AIReadmeMigrator:
                     # This shouldn't happen, but handle gracefully
                     self.logger.info(f"User declined changes for {repo_id}")
                     return None
-            
+
             self.logger.info(f"AI README migration completed successfully for {repo_id}")
             return migrated_content
-                
+
         except Exception as e:
             if self.verbose:
                 import traceback
@@ -72,14 +72,15 @@ class AIReadmeMigrator:
             else:
                 self.logger.error(f"Error during AI README migration for {repo_id}: {e}")
             return None
-    
+
     def _create_migration_prompt(self, content: str, repo_id: str) -> str:
         """Create a detailed prompt for the AI README migration"""
-        
-        example_diff = """
-Example migration (v2 -> v3):
+
+        example_diff1 = """
+## Example migration (v2 -> v3):
 
 BEFORE:
+'''''
 ```js
 // npm i @xenova/transformers
 import { pipeline } from '@xenova/transformers';
@@ -88,8 +89,10 @@ let url = 'https://example.com/audio.wav';
 let transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en');
 let output = await transcriber(url);
 ```
+'''''
 
 AFTER:
+'''''
 ```js
 import { pipeline } from '@huggingface/transformers';
 
@@ -100,8 +103,64 @@ const transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisp
 const url = 'https://example.com/audio.wav';
 const output = await transcriber(url);
 ```
+'''''
 """
-        
+
+        example_diff2 = """
+## Example migration (v2 -> v3):
+
+BEFORE:
+'''''
+
+```js
+// npm i @xenova/transformers
+import { pipeline, cos_sim } from '@xenova/transformers';
+
+// Create feature extraction pipeline
+const extractor = await pipeline('feature-extraction', 'Xenova/jina-embeddings-v2-small-en',
+    { quantized: false } // Comment out this line to use the quantized version
+);
+
+// Generate embeddings
+const output = await extractor(
+    ['How is the weather today?', 'What is the current weather like today?'],
+    { pooling: 'mean' }
+);
+
+// Compute cosine similarity
+console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (unquantized) vs. 0.9341121503699659 (quantized)
+```
+'''''
+
+AFTER:
+'''''
+
+If you haven't already, you can install the [Transformers.js](https://huggingface.co/docs/transformers.js) JavaScript library from [NPM](https://www.npmjs.com/package/@huggingface/transformers) using:
+```bash
+npm i @huggingface/transformers
+```
+
+You can then use the model as follows:
+```js
+import { pipeline, cos_sim } from '@huggingface/transformers';
+
+// Create feature extraction pipeline
+const extractor = await pipeline('feature-extraction', 'Xenova/jina-embeddings-v2-small-en',
+    { dtype: "fp32" } // Options: "fp32", "fp16", "q8", "q4"
+);
+
+// Generate embeddings
+const output = await extractor(
+    ['How is the weather today?', 'What is the current weather like today?'],
+    { pooling: 'mean' }
+);
+
+// Compute cosine similarity
+console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (unquantized) vs. 0.9341121503699659 (quantized)
+```
+'''''
+"""
+
         prompt = f"""You are migrating a Transformers.js model repository README from v2 to v3. Your task is to update the README content while preserving its original structure and purpose.
 
 ## CRITICAL REQUIREMENTS:
@@ -112,11 +171,12 @@ const output = await transcriber(url);
 
 ## Required Changes:
 1. **Package name**: Change `@xenova/transformers` to `@huggingface/transformers`
-2. **Installation instructions**: ALWAYS add installation instructions when there are code examples, even if not explicitly missing
-3. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
-4. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks
+2. **Installation instructions**: Add installation instructions when there are code examples.
+3. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks because the installation instructions are already added as above.
+4. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
 5. **Add semicolons**: Ensure statements end with semicolons where appropriate
-6. **Update quantization syntax**: Change `{{ quantized: false }}` to `{{ dtype: "fp32" }}` and show available options
+6. **Keep code formats**: Keep the code formats such as white spaces, line breaks, etc. as is.
+7. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp3b2", "fp16", "q8", "q4"'
 
 ## Installation Section Template:
 When adding installation instructions, use this format before the first code example:
@@ -130,12 +190,14 @@ npm i @huggingface/transformers
 You can then use the model as follows:
 ```
 
-{example_diff}
+{example_diff1}
+
+{example_diff2}
 
 ## STRICT GUIDELINES:
 - **NEVER remove frontmatter** - Keep all YAML metadata between --- lines exactly as-is
 - DO NOT add explanatory text about what the code does
-- DO NOT move example outputs or change code structure  
+- DO NOT move example outputs or change code structure
 - DO NOT add sections that weren't in the original
 - DO NOT add wrapper text like "Here is the migrated content"
 - PRESERVE comments that are example outputs (like "// Found car at...")
@@ -150,19 +212,19 @@ You can then use the model as follows:
 ## MIGRATED README (output only this):"""
 
         return prompt
-    
+
     def _validate_migration(self, original: str, migrated: str) -> bool:
         """Validate the AI README migration result"""
-        
+
         # Basic validation checks
         if not migrated or len(migrated) < 50:
             self.logger.error("README migration result is too short or empty")
             return False
-        
+
         # Check for unwanted wrapper text
         unwanted_phrases = [
             "here is the migrated",
-            "here's the migrated", 
+            "here's the migrated",
             "migrated readme content:",
             "migrated content:",
             "```markdown\n---",  # Check if it starts with markdown wrapper
@@ -172,50 +234,50 @@ You can then use the model as follows:
             if phrase in migrated_lower:
                 self.logger.error(f"README migration contains unwanted wrapper text: '{phrase}'")
                 return False
-        
+
         # Check if the migration actually changed v2 to v3
         if '@xenova/transformers' in migrated:
             self.logger.error("README migration failed: Still contains @xenova/transformers")
             return False
-        
+
         # Check if it contains the expected v3 package name (only if original had v2)
         if '@huggingface/transformers' not in migrated and '@xenova/transformers' in original:
             self.logger.error("README migration failed: Missing @huggingface/transformers")
             return False
-        
+
         # Check if the content structure is preserved (reasonable length)
         length_ratio = len(migrated) / len(original)
         if length_ratio < 0.7 or length_ratio > 1.5:
             self.logger.error(f"README migration result length seems wrong: {length_ratio:.2f}x original")
             return False
-        
+
         # Check that frontmatter is preserved if it existed in original
         original_has_frontmatter = original.strip().startswith('---')
         migrated_has_frontmatter = migrated.strip().startswith('---')
-        
+
         if original_has_frontmatter and not migrated_has_frontmatter:
             self.logger.error("README migration removed frontmatter - this is not allowed")
             return False
-        
+
         # Check that it starts properly (should start with frontmatter or content, not wrapper text)
         if not (migrated.startswith('---') or migrated.startswith('#') or migrated.startswith('<!') or migrated.strip().startswith('##')):
             first_line = migrated.split('\n')[0]
             if any(word in first_line.lower() for word in ['here', 'migrated', 'content']):
                 self.logger.error(f"README migration starts with unwanted text: '{first_line}'")
                 return False
-        
+
         return True
-    
+
     def _show_changes_and_confirm(self, original: str, migrated: str, repo_id: str) -> str:
         """Show the changes to the user and ask for confirmation"""
         import difflib
-        
+
         print(f"\n{'='*80}")
         print(f"AI Migration Suggested Changes for: {repo_id}")
         print(f"{'='*80}")
         print(f"Commit message: 📝 Update README.md samples for Transformers.js v3")
         print(f"{'='*80}")
-        
+
         # Generate and display diff
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -224,7 +286,7 @@ You can then use the model as follows:
             tofile="README.md (migrated)",
             lineterm=""
         )
-        
+
         diff_output = list(diff)
         if diff_output:
             print("\nChanges:")
@@ -243,13 +305,13 @@ You can then use the model as follows:
         else:
             print("\nNo changes detected.")
             return False
-        
+
         print(f"\n{'='*80}")
-        
+
         # Ask for confirmation
         while True:
             response = input("Do you want to apply these changes? [y/ns/nd/d] (y=yes, ns=no+skip, nd=no+done, d=show diff again): ").lower().strip()
-            
+
             if response in ['y', 'yes']:
                 return "accept"
             elif response in ['ns', 'no+skip', 'skip']:
@@ -283,7 +345,7 @@ You can then use the model as follows:
                 print("  ns = Skip and leave undone (can retry later)")
                 print("  nd = Skip and mark done (won't retry)")
                 print("  d  = Show diff again")
-    
+
     def is_available(self) -> bool:
         """Check if AI README migration is available"""
         return True
