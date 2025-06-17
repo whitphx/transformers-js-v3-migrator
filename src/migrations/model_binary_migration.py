@@ -71,33 +71,6 @@ class ModelBinaryMigration(BaseMigration):
                     error_message="ONNX model validation failed"
                 )
             
-            # Step 1.5: Preview and ask for confirmation in interactive mode
-            if interactive:
-                user_choice = self._preview_and_confirm(onnx_path, repo_id)
-                if user_choice == "reject_skip":
-                    self.logger.info(f"User declined model quantization for {repo_id} - leaving undone")
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.FAILED,  # Mark as failed so repo isn't added to global processed list
-                        changes_made=False,
-                        error_message="User declined quantization (ns) - repository left undone for future attempts"
-                    )
-                elif user_choice == "reject_done":
-                    self.logger.info(f"User declined model quantization for {repo_id} - marking as done")
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.COMPLETED,
-                        changes_made=False,
-                        error_message="User declined quantization"
-                    )
-                elif user_choice != "accept":
-                    # This shouldn't happen, but handle gracefully
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.COMPLETED,
-                        changes_made=False,
-                        error_message="User declined quantization"
-                    )
             
             # Step 2: Create temporary directory for processing
             with tempfile.TemporaryDirectory(prefix="model_quantization_") as temp_dir:
@@ -173,6 +146,41 @@ class ModelBinaryMigration(BaseMigration):
                 
                 if modified_files:
                     self.logger.info(f"Successfully added {len(modified_files)} quantized models for {repo_id}")
+                    
+                    # Step 7: Ask for user confirmation of the results in interactive mode
+                    if interactive:
+                        user_choice = self._confirm_results(onnx_path, repo_id, modified_files)
+                        if user_choice == "reject_skip":
+                            # User doesn't like the results - remove the generated files and leave undone
+                            self._cleanup_generated_files(onnx_path, modified_files)
+                            self.logger.info(f"User rejected quantization results for {repo_id} - files removed, leaving undone")
+                            return MigrationResult(
+                                migration_type=self.migration_type,
+                                status=MigrationStatus.FAILED,  # Mark as failed so repo isn't added to global processed list
+                                changes_made=False,
+                                error_message="User rejected quantization results - repository left undone for future attempts"
+                            )
+                        elif user_choice == "reject_done":
+                            # User doesn't like the results but wants to mark as done
+                            self._cleanup_generated_files(onnx_path, modified_files)
+                            self.logger.info(f"User rejected quantization results for {repo_id} - files removed, marking as done")
+                            return MigrationResult(
+                                migration_type=self.migration_type,
+                                status=MigrationStatus.COMPLETED,
+                                changes_made=False,
+                                error_message="User rejected quantization results"
+                            )
+                        elif user_choice != "accept":
+                            # This shouldn't happen, but handle gracefully
+                            self._cleanup_generated_files(onnx_path, modified_files)
+                            return MigrationResult(
+                                migration_type=self.migration_type,
+                                status=MigrationStatus.COMPLETED,
+                                changes_made=False,
+                                error_message="User rejected quantization results"
+                            )
+                    
+                    # User accepted or non-interactive mode
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.COMPLETED,
@@ -560,3 +568,110 @@ print("✓ Model {model_name} is valid")
                     print("  ns = Skip and leave undone (can retry later)")
                     print("  nd = Skip and mark done (won't retry)")
                     print("  p  = Show preview again")
+    
+    def _confirm_results(self, onnx_path: str, repo_id: str, modified_files: list) -> str:
+        """Show the generated files and ask for user confirmation of the results"""
+        
+        print(f"\n{'='*80}")
+        print(f"Model Quantization Results for: {repo_id}")
+        print(f"{'='*80}")
+        print(f"Quantization completed successfully!")
+        print(f"{'='*80}")
+        
+        print(f"\nGenerated files ({len(modified_files)} total):")
+        
+        # Group files by base model
+        files_by_base = {}
+        for file_path in modified_files:
+            # Extract filename from onnx/filename.onnx
+            filename = file_path.split('/')[-1] if '/' in file_path else file_path
+            
+            # Extract base name (everything before the first underscore after removing .onnx)
+            base_name = filename[:-5]  # Remove .onnx
+            if '_' in base_name:
+                # Find the base model name (everything before the quantization mode)
+                parts = base_name.split('_')
+                # Find where the quantization mode starts
+                for i, part in enumerate(parts):
+                    if part in self.QUANTIZATION_MODES:
+                        base_model = '_'.join(parts[:i])
+                        mode = '_'.join(parts[i:])
+                        break
+                else:
+                    base_model = base_name
+                    mode = "unknown"
+            else:
+                base_model = base_name
+                mode = "unknown"
+            
+            if base_model not in files_by_base:
+                files_by_base[base_model] = []
+            files_by_base[base_model].append((filename, mode))
+        
+        # Display files grouped by base model
+        for base_model, files in sorted(files_by_base.items()):
+            print(f"\n  {base_model}.onnx variants:")
+            for filename, mode in sorted(files):
+                file_path = os.path.join(onnx_path, filename)
+                try:
+                    file_size = os.path.getsize(file_path)
+                    size_mb = file_size / (1024 * 1024)
+                    print(f"    • {filename} ({size_mb:.1f} MB) - {mode}")
+                except:
+                    print(f"    • {filename} - {mode}")
+        
+        # Calculate total size
+        total_size = 0
+        for file_path in modified_files:
+            filename = file_path.split('/')[-1] if '/' in file_path else file_path
+            full_path = os.path.join(onnx_path, filename)
+            try:
+                total_size += os.path.getsize(full_path)
+            except:
+                pass
+        
+        total_size_mb = total_size / (1024 * 1024)
+        print(f"\nTotal size of new files: {total_size_mb:.1f} MB")
+        print(f"\nNote: Original models are preserved. These are additional quantized variants.")
+        
+        print(f"\n{'='*80}")
+        
+        # Ask for confirmation
+        while True:
+            response = input("Do these results look good? [y/ns/nd] (y=yes, ns=no+skip, nd=no+done): ").lower().strip()
+            
+            if response in ['y', 'yes']:
+                return "accept"
+            elif response in ['ns', 'no+skip', 'skip']:
+                return "reject_skip"  # Remove files and leave undone for future attempts
+            elif response in ['nd', 'no+done', 'done']:
+                return "reject_done"  # Remove files and mark as done
+            elif response in ['n', 'no']:
+                # For backward compatibility, ask for clarification
+                print("Please clarify:")
+                print("  ns = Remove files and leave undone (can retry later)")
+                print("  nd = Remove files and mark done (won't retry)")
+                continue
+            else:
+                print("Please enter:")
+                print("  y  = Accept the quantized models")
+                print("  ns = Remove files and leave undone (can retry later)")
+                print("  nd = Remove files and mark done (won't retry)")
+    
+    def _cleanup_generated_files(self, onnx_path: str, modified_files: list):
+        """Remove the generated quantized model files"""
+        removed_count = 0
+        for file_path in modified_files:
+            # Extract filename from onnx/filename.onnx
+            filename = file_path.split('/')[-1] if '/' in file_path else file_path
+            full_path = os.path.join(onnx_path, filename)
+            
+            try:
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+                    removed_count += 1
+                    self.logger.info(f"Removed generated file: {filename}")
+            except Exception as e:
+                self.logger.warning(f"Failed to remove {filename}: {e}")
+        
+        self.logger.info(f"Cleaned up {removed_count} generated quantized model files")
