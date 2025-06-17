@@ -88,7 +88,7 @@ class TransformersJSMigrator:
         )
         
         # Filter out globally processed repositories
-        repos_to_process = self.session_manager.filter_unprocessed_repos(all_repos)
+        repos_to_process = self.session_manager.filter_unprocessed_repos(all_repos, current_mode=self.mode)
         
         self.logger.info(f"Found {len(repos_to_process)} new repositories to migrate")
         
@@ -201,11 +201,8 @@ class TransformersJSMigrator:
                             applicable_migrations.append(migration)
                             self.logger.debug(f"Migration {migration.migration_type.value} is applicable to {repo_id}")
                         else:
-                            # Mark non-applicable migrations as NOT_APPLICABLE
-                            self.session_manager.update_migration_status(
-                                session_id, repo_id, migration.migration_type, MigrationStatus.NOT_APPLICABLE
-                            )
-                            self.logger.debug(f"Migration {migration.migration_type.value} is not applicable to {repo_id}")
+                            # Don't save NOT_APPLICABLE status - repo might become applicable in future runs
+                            self.logger.debug(f"Migration {migration.migration_type.value} is not applicable to {repo_id} - not saving status")
                     except Exception as e:
                         # Mark migrations with errors as FAILED
                         error_msg = f"Error checking applicability: {str(e)}"

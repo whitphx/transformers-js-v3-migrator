@@ -41,7 +41,11 @@ class AIReadmeMigrator:
             migrated_content = response.content[0].text.strip()
 
             # Validate the response
-            if not self._validate_migration(content, migrated_content):
+            validation_result = self._validate_migration(content, migrated_content)
+            if validation_result == "trivial":
+                self.logger.info(f"AI README migration skipped for {repo_id} - only trivial changes")
+                return None  # Return None to indicate no changes needed (will be marked as SKIPPED)
+            elif not validation_result:
                 self.logger.error(f"AI README migration validation failed for {repo_id}")
                 return None
 
@@ -171,12 +175,13 @@ console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (un
 
 ## Required Changes:
 1. **Package name**: Change `@xenova/transformers` to `@huggingface/transformers`
-2. **Installation instructions**: Add installation instructions when there are code examples.
-3. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks because the installation instructions are already added as above.
-4. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
-5. **Add semicolons**: Ensure statements end with semicolons where appropriate
-6. **Keep code formats**: Keep the code formats such as white spaces, line breaks, etc. as is.
-7. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp3b2", "fp16", "q8", "q4"'. Place this line after the pipeline creation line.
+2. **Installation instructions**: ALWAYS add installation instructions when there are code examples, even if they were missing before
+3. **Add basic usage example**: If no code examples exist but the model can be used with Transformers.js, add a basic usage example
+4. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks because the installation instructions are already added as above
+5. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
+6. **Add semicolons**: Ensure statements end with semicolons where appropriate
+7. **Keep code formats**: Keep the code formats such as white spaces, line breaks, etc. as is
+8. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp32", "fp16", "q8", "q4"'. Place this line after the pipeline creation line
 
 ## Installation Section Template:
 When adding installation instructions, use this format before the first code example:
@@ -190,15 +195,31 @@ npm i @huggingface/transformers
 You can then use the model as follows:
 ```
 
+## Basic Usage Example Template:
+If no code examples exist, add a basic usage example based on the model type. Use the repository ID from the prompt to create an appropriate example:
+
+```js
+import {{ pipeline }} from '@huggingface/transformers';
+
+// Create the pipeline
+const pipe = await pipeline('task-type', '{repo_id}');
+
+// Use the model
+const result = await pipe('input text or data');
+console.log(result);
+```
+
 {example_diff1}
 
 {example_diff2}
 
 ## STRICT GUIDELINES:
 - **NEVER remove frontmatter** - Keep all YAML metadata between --- lines exactly as-is
-- DO NOT add explanatory text about what the code does
+- **ADD installation instructions** - Always add them before code examples if missing
+- **ADD basic usage example** - If no code examples exist, add a simple usage example based on the model type
+- DO NOT add explanatory text about what the code does beyond basic usage
 - DO NOT move example outputs or change code structure
-- DO NOT add sections that weren't in the original
+- DO NOT add sections that weren't in the original (except installation and basic usage)
 - DO NOT add wrapper text like "Here is the migrated content"
 - PRESERVE comments that are example outputs (like "// Found car at...")
 - Keep the exact same markdown structure and sections
@@ -213,8 +234,14 @@ You can then use the model as follows:
 
         return prompt
 
-    def _validate_migration(self, original: str, migrated: str) -> bool:
-        """Validate the AI README migration result"""
+    def _validate_migration(self, original: str, migrated: str):
+        """Validate the AI README migration result
+        
+        Returns:
+            True: Migration is valid and has meaningful changes
+            False: Migration failed validation 
+            "trivial": Migration is valid but only has trivial changes
+        """
 
         # Basic validation checks
         if not migrated or len(migrated) < 50:
@@ -266,7 +293,93 @@ You can then use the model as follows:
                 self.logger.error(f"README migration starts with unwanted text: '{first_line}'")
                 return False
 
+        # Check if changes are trivial (only whitespace/empty line changes)
+        if self._are_changes_trivial(original, migrated):
+            self.logger.info("README migration contains only trivial changes (whitespace/empty lines) - treating as completed")
+            return "trivial"
+
         return True
+
+    def _are_changes_trivial(self, original: str, migrated: str) -> bool:
+        """Check if the changes are only trivial (whitespace, empty lines, etc.)"""
+        
+        # Normalize both texts for comparison
+        def normalize_text(text: str) -> str:
+            """Normalize text by removing extra whitespace and empty lines"""
+            lines = []
+            for line in text.split('\n'):
+                # Strip trailing whitespace but preserve leading whitespace (indentation)
+                normalized_line = line.rstrip()
+                lines.append(normalized_line)
+            
+            # Remove consecutive empty lines (keep at most one empty line between content)
+            normalized_lines = []
+            prev_empty = False
+            for line in lines:
+                is_empty = len(line.strip()) == 0
+                if not (is_empty and prev_empty):  # Skip if both current and previous are empty
+                    normalized_lines.append(line)
+                prev_empty = is_empty
+            
+            # Remove trailing empty lines
+            while normalized_lines and len(normalized_lines[-1].strip()) == 0:
+                normalized_lines.pop()
+            
+            return '\n'.join(normalized_lines)
+        
+        # Normalize both versions
+        original_normalized = normalize_text(original)
+        migrated_normalized = normalize_text(migrated)
+        
+        # If normalized versions are identical, changes are trivial
+        if original_normalized == migrated_normalized:
+            self.logger.debug("Changes are trivial - only whitespace/empty line differences")
+            return True
+        
+        # Check if the only changes are in whitespace characters
+        # Remove all whitespace and compare
+        original_no_whitespace = ''.join(original.split())
+        migrated_no_whitespace = ''.join(migrated.split())
+        
+        if original_no_whitespace == migrated_no_whitespace:
+            self.logger.debug("Changes are trivial - only whitespace differences")
+            return True
+        
+        # Check if changes are minimal (less than 2% of content changed)
+        import difflib
+        differ = difflib.SequenceMatcher(None, original_normalized, migrated_normalized)
+        similarity_ratio = differ.ratio()
+        
+        if similarity_ratio > 0.98:  # More than 98% similar
+            # Get the actual differences to see if they're trivial
+            diff_operations = differ.get_opcodes()
+            significant_changes = False
+            
+            for op, i1, i2, j1, j2 in diff_operations:
+                if op == 'equal':
+                    continue
+                elif op in ['delete', 'insert', 'replace']:
+                    original_chunk = original_normalized[i1:i2]
+                    migrated_chunk = migrated_normalized[j1:j2]
+                    
+                    # Check if this change is more than just whitespace/punctuation
+                    original_words = set(original_chunk.lower().split())
+                    migrated_words = set(migrated_chunk.lower().split())
+                    
+                    # If there are new meaningful words or significant word removals, it's not trivial
+                    if len(original_words.symmetric_difference(migrated_words)) > 0:
+                        # Check if the differences are just punctuation or very minor
+                        word_diff = original_words.symmetric_difference(migrated_words)
+                        meaningful_diff = any(len(word) > 2 and word.isalnum() for word in word_diff)
+                        if meaningful_diff:
+                            significant_changes = True
+                            break
+            
+            if not significant_changes:
+                self.logger.debug("Changes are trivial - minimal content differences")
+                return True
+        
+        return False
 
     def _show_changes_and_confirm(self, original: str, migrated: str, repo_id: str) -> str:
         """Show the changes to the user and ask for confirmation"""

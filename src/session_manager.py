@@ -160,16 +160,90 @@ class SessionManager:
         self.logger.info(f"Initialized session: {session_id}")
         return session_id, session_data
 
-    def filter_unprocessed_repos(self, repos: List[str]) -> List[str]:
-        """Filter out repositories that have been processed in any previous session"""
-        global_processed = self.get_global_processed_repos()
-        unprocessed = [repo for repo in repos if repo not in global_processed]
+    def filter_unprocessed_repos(self, repos: List[str], current_mode: str = "normal") -> List[str]:
+        """Filter out repositories that have been fully processed in any previous session
         
-        skipped_count = len(repos) - len(unprocessed)
+        A repository is considered fully processed only if ALL its migrations are in
+        COMPLETED, SKIPPED, or NOT_APPLICABLE status. Repositories with only DRY_RUN
+        or LOCAL migrations should be available for re-processing in other modes.
+        """
+        unprocessed = []
+        skipped_count = 0
+        
+        for repo in repos:
+            if self._is_repo_fully_processed(repo, current_mode):
+                skipped_count += 1
+                self.logger.debug(f"Skipping {repo} - fully processed")
+            else:
+                unprocessed.append(repo)
+        
         if skipped_count > 0:
             self.logger.info(f"Skipped {skipped_count} previously processed repositories")
         
         return unprocessed
+    
+    def _is_repo_fully_processed(self, repo_id: str, current_mode: str) -> bool:
+        """Check if a repository is fully processed and should be skipped"""
+        # First check if it's in the global processed list
+        global_processed = self.get_global_processed_repos()
+        if repo_id not in global_processed:
+            return False
+        
+        # If it's in global processed, we need to check the actual migration statuses
+        # across all sessions to see if it's truly complete
+        return self._check_repo_completion_across_sessions(repo_id, current_mode)
+    
+    def _check_repo_completion_across_sessions(self, repo_id: str, current_mode: str) -> bool:
+        """Check if a repo is fully completed across all sessions"""
+        import glob
+        
+        # Get all session files
+        session_files = glob.glob(os.path.join(self.sessions_dir, "session_*.json"))
+        
+        # Collect all migration statuses for this repo across all sessions
+        all_migration_statuses = {}
+        
+        for session_file in session_files:
+            try:
+                with open(session_file, 'r') as f:
+                    session_data = json.load(f)
+                    
+                repo_data = session_data.get("repos", {}).get(repo_id, {})
+                migrations = repo_data.get("migrations", {})
+                
+                # Update our view of migration statuses (later sessions override earlier ones)
+                for migration_type, migration_data in migrations.items():
+                    all_migration_statuses[migration_type] = migration_data.get("status")
+            except Exception as e:
+                self.logger.warning(f"Error reading session file {session_file}: {e}")
+                continue
+        
+        if not all_migration_statuses:
+            return False
+        
+        # Check if attempted migrations are truly complete
+        # Note: NOT_APPLICABLE migrations are not saved, so missing types are OK
+        for migration_type, status in all_migration_statuses.items():
+            if status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value]:
+                continue
+            elif status in [MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value]:
+                # These statuses mean the repo can be re-processed in normal mode
+                if current_mode == "normal":
+                    return False
+                # For dry_run and local modes, if there's already a DRY_RUN/LOCAL, we can skip
+                elif current_mode in ["dry_run", "local"] and status == MigrationStatus.DRY_RUN.value:
+                    continue
+                elif current_mode == "local" and status == MigrationStatus.LOCAL.value:
+                    continue
+                else:
+                    return False
+            else:
+                # PENDING, IN_PROGRESS, FAILED - not complete
+                return False
+        
+        # Repository is complete if all attempted migrations are in final states
+        # Missing migration types (NOT_APPLICABLE) don't block completion
+        return len(all_migration_statuses) > 0
 
     def update_repo_status(self, session_id: str, repo_id: str, status: RepoStatus, 
                           error_message: Optional[str] = None):
@@ -255,12 +329,16 @@ class SessionManager:
         self.save_session(session_id, session_data)
 
     def _update_repo_status_from_migrations(self, session_data: Dict, repo_id: str):
-        """Update overall repo status based on individual migration statuses"""
+        """Update overall repo status based on individual migration statuses
+        
+        Note: Only migrations that were actually attempted/applicable are tracked.
+        NOT_APPLICABLE migrations are not saved to allow future re-evaluation.
+        """
         repo_data = session_data["repos"][repo_id]
         migrations = repo_data.get("migrations", {})
         
         if not migrations:
-            return  # No migrations, keep current status
+            return  # No migrations attempted yet, keep current status
         
         migration_statuses = [m["status"] for m in migrations.values()]
         
@@ -268,9 +346,10 @@ class SessionManager:
         # This allows the repo to be retried in future sessions
         if any(status == MigrationStatus.FAILED.value for status in migration_statuses):
             repo_data["status"] = RepoStatus.PENDING.value  # Changed from FAILED to PENDING
-        # If all applicable migrations are completed or skipped, mark repo as completed
+        # If all attempted migrations are completed or skipped, mark repo as completed
         # Note: DRY_RUN and LOCAL status should not count as completion
-        elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value] 
+        # Note: NOT_APPLICABLE migrations are not saved, so they don't affect completion
+        elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value] 
                 for status in migration_statuses):
             repo_data["status"] = RepoStatus.COMPLETED.value
         # If any migration is in dry run or local state, keep repo as pending
