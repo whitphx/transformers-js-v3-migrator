@@ -30,28 +30,31 @@ class ModelBinaryMigration(BaseMigration):
         return f"Add missing quantized ONNX model variants ({modes_str}) for Transformers.js v3"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
-        """Check if repository has model.onnx that needs quantization"""
+        """Check if repository has base model files that need quantization"""
         onnx_path = os.path.join(repo_path, "onnx")
         
         if not os.path.exists(onnx_path):
             return False
         
-        # Check for the main model.onnx file
-        model_file = os.path.join(onnx_path, "model.onnx")
-        if not os.path.exists(model_file):
+        # Find all base model files (without mode suffixes)
+        base_models = self._find_base_model_files(onnx_path)
+        
+        if not base_models:
+            self.logger.info(f"No base model files found in {repo_id}")
             return False
         
-        # Check for missing quantized variants - only add what's missing
-        existing_files = set(os.listdir(onnx_path))
+        # Check if any base model has missing quantized variants
+        has_missing_variants = False
+        for base_model in base_models:
+            missing_modes = self._get_missing_quantization_modes(onnx_path, base_model)
+            if missing_modes:
+                has_missing_variants = True
+                self.logger.info(f"Repository {repo_id} - {base_model} is missing quantized variants: {missing_modes}")
         
-        # Determine which quantized variants are missing for model.onnx
-        missing_modes = self._get_missing_quantization_modes(onnx_path)
-        
-        if not missing_modes:
-            self.logger.info(f"Repository {repo_id} already has all quantized variants {self.QUANTIZATION_MODES}")
+        if not has_missing_variants:
+            self.logger.info(f"Repository {repo_id} already has all quantized variants for all models")
             return False
         
-        self.logger.info(f"Repository {repo_id} is missing quantized variants: {missing_modes}")
         return True
     
     def apply_migration(self, repo_path: str, repo_id: str, interactive: bool = True) -> MigrationResult:
@@ -103,33 +106,41 @@ class ModelBinaryMigration(BaseMigration):
                 os.makedirs(input_dir, exist_ok=True)
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Step 3: Process the main model.onnx file (slim then copy to input directory)
-                model_file = "model.onnx"
-                original_path = os.path.join(onnx_path, model_file)
-                slimmed_path = os.path.join(input_dir, model_file)
+                # Step 3: Process all base model files (slim then copy to input directory)
+                base_models = self._find_base_model_files(onnx_path)
                 
-                if not os.path.exists(original_path):
-                    self.logger.info(f"No model.onnx found in {repo_id}")
+                if not base_models:
+                    self.logger.info(f"No base model files found in {repo_id}")
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.COMPLETED,
                         changes_made=False,
-                        error_message="No model.onnx found for quantization"
+                        error_message="No base model files found for quantization"
                     )
                 
-                # Slim the model before quantization
-                if not self._slim_model(original_path, slimmed_path, repo_id):
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.FAILED,
-                        changes_made=False,
-                        error_message=f"Failed to slim {model_file}"
-                    )
+                # Process each base model file
+                all_missing_modes = set()
+                for model_file in base_models:
+                    original_path = os.path.join(onnx_path, model_file)
+                    slimmed_path = os.path.join(input_dir, model_file)
+                    
+                    # Slim the model before quantization
+                    if not self._slim_model(original_path, slimmed_path, repo_id):
+                        return MigrationResult(
+                            migration_type=self.migration_type,
+                            status=MigrationStatus.FAILED,
+                            changes_made=False,
+                            error_message=f"Failed to slim {model_file}"
+                        )
+                    
+                    self.logger.info(f"Slimmed and prepared model: {model_file}")
+                    
+                    # Collect missing modes for this model
+                    missing_modes = self._get_missing_quantization_modes(onnx_path, model_file)
+                    all_missing_modes.update(missing_modes)
                 
-                self.logger.info(f"Slimmed and prepared model: {model_file}")
-                
-                # Step 4: Quantize slimmed model (only missing variants)
-                missing_modes = self._get_missing_quantization_modes(onnx_path)
+                # Step 4: Quantize slimmed models (only missing variants)
+                missing_modes = tuple(all_missing_modes)
                 if not self._quantize_models(input_dir, output_dir, repo_id, missing_modes):
                     return MigrationResult(
                         migration_type=self.migration_type,
@@ -186,13 +197,40 @@ class ModelBinaryMigration(BaseMigration):
                 error_message=error_msg
             )
     
-    def _get_missing_quantization_modes(self, onnx_path: str) -> tuple:
-        """Get quantization modes that don't already exist in the directory"""
+    def _find_base_model_files(self, onnx_path: str) -> list:
+        """Find all base model files (without mode suffixes) in the onnx directory"""
+        if not os.path.exists(onnx_path):
+            return []
+        
+        existing_files = set(os.listdir(onnx_path))
+        base_models = []
+        
+        # Look for .onnx files that don't have quantization mode suffixes
+        for filename in existing_files:
+            if filename.endswith('.onnx'):
+                # Check if this is a base model (not a quantized variant)
+                base_name = filename[:-5]  # Remove .onnx extension
+                
+                # Skip if this appears to be a quantized variant
+                is_quantized_variant = any(
+                    base_name.endswith(f"_{mode}") for mode in self.QUANTIZATION_MODES
+                )
+                
+                if not is_quantized_variant:
+                    base_models.append(filename)
+        
+        return sorted(base_models)
+    
+    def _get_missing_quantization_modes(self, onnx_path: str, base_model: str = "model.onnx") -> tuple:
+        """Get quantization modes that don't already exist for a specific base model"""
         existing_files = set(os.listdir(onnx_path))
         missing_modes = []
         
+        # Extract base name without .onnx extension
+        base_name = base_model[:-5] if base_model.endswith('.onnx') else base_model
+        
         for mode in self.QUANTIZATION_MODES:
-            variant_file = f"model_{mode}.onnx"
+            variant_file = f"{base_name}_{mode}.onnx"
             if variant_file not in existing_files:
                 missing_modes.append(mode)
         
@@ -404,42 +442,48 @@ print("✓ Model {model_name} is valid")
     def _preview_and_confirm(self, onnx_path: str, repo_id: str) -> str:
         """Preview the quantization tasks and ask for user confirmation"""
         
-        # Analyze what needs to be done for model.onnx
-        existing_files = set(os.listdir(onnx_path))
-        model_file = "model.onnx"
+        # Find all base model files
+        base_models = self._find_base_model_files(onnx_path)
+        
+        if not base_models:
+            print(f"No base model files found in repository")
+            return "reject_done"
         
         missing_variants = []
         tasks_preview = []
+        all_missing_modes = set()
         
-        # Check if model.onnx exists
-        if model_file not in existing_files:
-            print(f"No model.onnx found in repository")
-            return "reject_done"
-        
-        # Check for missing quantization variants of model.onnx
-        missing_modes = self._get_missing_quantization_modes(onnx_path)
-        
-        for mode in missing_modes:
-            variant_file = f"model_{mode}.onnx"
-            description = f"{mode.upper()} quantized variant"
-            missing_variants.append(variant_file)
-            tasks_preview.append(f"  • Generate {variant_file} ({description})")
+        # Analyze each base model file
+        for model_file in base_models:
+            missing_modes = self._get_missing_quantization_modes(onnx_path, model_file)
+            all_missing_modes.update(missing_modes)
+            
+            if missing_modes:
+                # Extract base name without .onnx extension
+                base_name = model_file[:-5] if model_file.endswith('.onnx') else model_file
+                
+                for mode in missing_modes:
+                    variant_file = f"{base_name}_{mode}.onnx"
+                    description = f"{mode.upper()} quantized variant"
+                    missing_variants.append(variant_file)
+                    tasks_preview.append(f"  • Generate {variant_file} ({description})")
         
         print(f"\n{'='*80}")
         print(f"Model Binary Quantization Preview for: {repo_id}")
         print(f"{'='*80}")
-        modes_str = ", ".join(missing_modes) if missing_modes else "no missing modes"
+        modes_str = ", ".join(sorted(all_missing_modes)) if all_missing_modes else "no missing modes"
         print(f"Commit message: ⚡ Add quantized model variants ({modes_str})")
         print(f"{'='*80}")
         
-        print(f"\nSource model:")
-        model_path = os.path.join(onnx_path, model_file)
-        try:
-            file_size = os.path.getsize(model_path)
-            size_mb = file_size / (1024 * 1024)
-            print(f"  • {model_file} ({size_mb:.1f} MB)")
-        except:
-            print(f"  • {model_file}")
+        print(f"\nSource models:")
+        for model_file in base_models:
+            model_path = os.path.join(onnx_path, model_file)
+            try:
+                file_size = os.path.getsize(model_path)
+                size_mb = file_size / (1024 * 1024)
+                print(f"  • {model_file} ({size_mb:.1f} MB)")
+            except:
+                print(f"  • {model_file}")
         
         print(f"\nQuantization tasks to perform:")
         if tasks_preview:
@@ -450,7 +494,7 @@ print("✓ Model {model_name} is valid")
             print(f"  1. Use uv to run operations with isolated dependencies from submodule's requirements.txt")
             print(f"  2. Identify base models (non-quantized variants)")  
             print(f"  3. Slim base models using onnxslim")
-            print(f"  4. Run quantization script with modes: {', '.join(missing_modes)}")
+            print(f"  4. Run quantization script with modes: {', '.join(sorted(all_missing_modes))}")
             print(f"  5. Validate generated models with ONNX checker")
             print(f"  6. Test basic compatibility with Transformers.js")
             print(f"  7. Add {len(missing_variants)} new quantized models to repository")
