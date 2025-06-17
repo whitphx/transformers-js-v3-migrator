@@ -18,7 +18,7 @@ class ReadmeSamplesMigration(BaseMigration):
     
     @property
     def description(self) -> str:
-        return "Update README.md sample code from Transformers.js v2 to v3 using AI"
+        return "Update README.md sample code from Transformers.js v2 to v3"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
         """Check if README.md exists and contains v2 code"""
