@@ -11,6 +11,9 @@ from ..migration_types import BaseMigration, MigrationType, MigrationResult, Mig
 class ModelBinaryMigration(BaseMigration):
     """Migration for converting and quantizing ONNX model binaries"""
     
+    # Define available quantization modes
+    QUANTIZATION_MODES = ("int8", "uint8", "bnb4", "q4", "q4f16")
+    
     def __init__(self):
         super().__init__()
         # Get the path to the transformers.js submodule
@@ -23,7 +26,8 @@ class ModelBinaryMigration(BaseMigration):
     
     @property
     def description(self) -> str:
-        return "Add missing quantized ONNX model variants (int8, uint8, bnb4, q4, q4f16) for Transformers.js v3"
+        modes_str = ", ".join(self.QUANTIZATION_MODES)
+        return f"Add missing quantized ONNX model variants ({modes_str}) for Transformers.js v3"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
         """Check if repository has model.onnx that needs quantization"""
@@ -41,23 +45,13 @@ class ModelBinaryMigration(BaseMigration):
         existing_files = set(os.listdir(onnx_path))
         
         # Determine which quantized variants are missing for model.onnx
-        missing_variants = []
-        base_name = "model"
+        missing_modes = self._get_missing_quantization_modes(onnx_path)
         
-        # Check for all quantization variants
-        variant_suffixes = ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']
-        variant_names = ['int8', 'uint8', 'bnb4', 'q4', 'q4f16']
-        
-        for suffix, name in zip(variant_suffixes, variant_names):
-            variant_file = f"{base_name}{suffix}.onnx"
-            if variant_file not in existing_files:
-                missing_variants.append(name)
-        
-        if not missing_variants:
-            self.logger.info(f"Repository {repo_id} already has all quantized variants (int8, uint8, bnb4, q4, q4f16)")
+        if not missing_modes:
+            self.logger.info(f"Repository {repo_id} already has all quantized variants {self.QUANTIZATION_MODES}")
             return False
         
-        self.logger.info(f"Repository {repo_id} is missing quantized variants: {set(missing_variants)}")
+        self.logger.info(f"Repository {repo_id} is missing quantized variants: {missing_modes}")
         return True
     
     def apply_migration(self, repo_path: str, repo_id: str, interactive: bool = True) -> MigrationResult:
@@ -134,8 +128,9 @@ class ModelBinaryMigration(BaseMigration):
                 
                 self.logger.info(f"Slimmed and prepared model: {model_file}")
                 
-                # Step 4: Quantize slimmed models (only q4 and fp16 variants)
-                if not self._quantize_models(input_dir, output_dir, repo_id):
+                # Step 4: Quantize slimmed model (only missing variants)
+                missing_modes = self._get_missing_quantization_modes(onnx_path)
+                if not self._quantize_models(input_dir, output_dir, repo_id, missing_modes):
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.FAILED,
@@ -190,6 +185,18 @@ class ModelBinaryMigration(BaseMigration):
                 changes_made=False,
                 error_message=error_msg
             )
+    
+    def _get_missing_quantization_modes(self, onnx_path: str) -> tuple:
+        """Get quantization modes that don't already exist in the directory"""
+        existing_files = set(os.listdir(onnx_path))
+        missing_modes = []
+        
+        for mode in self.QUANTIZATION_MODES:
+            variant_file = f"model_{mode}.onnx"
+            if variant_file not in existing_files:
+                missing_modes.append(mode)
+        
+        return tuple(missing_modes)
     
     def _validate_onnx_models(self, onnx_path: str, repo_id: str) -> bool:
         """Validate ONNX models using isolated dependencies via uv"""
@@ -307,10 +314,14 @@ print("✓ Model {model_name} is valid")
             self.logger.error(f"Error in isolated validation for {model_name}: {e}")
             return False
     
-    def _quantize_models(self, input_folder: str, output_folder: str, repo_id: str) -> bool:
+    def _quantize_models(self, input_folder: str, output_folder: str, repo_id: str, modes: tuple) -> bool:
         """Quantize models using transformers.js quantization script from submodule"""
         try:
-            self.logger.info(f"Quantizing models from {input_folder}")
+            if not modes:
+                self.logger.info("No quantization modes needed, skipping quantization")
+                return True
+                
+            self.logger.info(f"Quantizing models from {input_folder} with modes: {modes}")
             
             # Verify the transformers.js submodule exists
             if not self.transformers_js_path.exists():
@@ -326,19 +337,20 @@ print("✓ Model {model_name} is valid")
             # Run the quantization script using uv with isolated dependencies
             self.logger.info("Running quantization with isolated dependencies via uv")
             
-            # Run the quantization script using uv with isolated dependencies
-            result = subprocess.run([
+            # Build command with only the needed modes
+            cmd = [
                 "uv", "run", 
                 "--with-requirements", str(requirements_file),
                 "python", "-m", "scripts.quantize",
                 "--input_folder", input_folder,
                 "--output_folder", output_folder,
-                "--modes", "int8", "uint8", "bnb4", "q4", "q4f16"
-            ], cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
+                "--modes"
+            ] + list(modes)
+            
+            result = subprocess.run(cmd, cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
             
             self.logger.info("✓ Quantization completed via uv")
-            
-            self.logger.info(f"✓ Successfully quantized models for {repo_id}")
+            self.logger.info(f"✓ Successfully quantized models for {repo_id} with modes: {modes}")
             return True
             
         except subprocess.CalledProcessError as e:
@@ -404,26 +416,20 @@ print("✓ Model {model_name} is valid")
             print(f"No model.onnx found in repository")
             return "reject_done"
         
-        # Check for all quantization variants of model.onnx
-        base_name = "model"
-        variant_configs = [
-            ('_int8', 'INT8 quantized variant'),
-            ('_uint8', 'UINT8 quantized variant'),
-            ('_bnb4', 'BNB4 quantized variant'),
-            ('_q4', 'Q4 quantized variant'),
-            ('_q4f16', 'Q4F16 quantized variant')
-        ]
+        # Check for missing quantization variants of model.onnx
+        missing_modes = self._get_missing_quantization_modes(onnx_path)
         
-        for suffix, description in variant_configs:
-            variant_file = f"{base_name}{suffix}.onnx"
-            if variant_file not in existing_files:
-                missing_variants.append(variant_file)
-                tasks_preview.append(f"  • Generate {variant_file} ({description})")
+        for mode in missing_modes:
+            variant_file = f"model_{mode}.onnx"
+            description = f"{mode.upper()} quantized variant"
+            missing_variants.append(variant_file)
+            tasks_preview.append(f"  • Generate {variant_file} ({description})")
         
         print(f"\n{'='*80}")
         print(f"Model Binary Quantization Preview for: {repo_id}")
         print(f"{'='*80}")
-        print(f"Commit message: ⚡ Add quantized model variants (int8, uint8, bnb4, q4, q4f16)")
+        modes_str = ", ".join(missing_modes) if missing_modes else "no missing modes"
+        print(f"Commit message: ⚡ Add quantized model variants ({modes_str})")
         print(f"{'='*80}")
         
         print(f"\nSource model:")
@@ -444,7 +450,7 @@ print("✓ Model {model_name} is valid")
             print(f"  1. Use uv to run operations with isolated dependencies from submodule's requirements.txt")
             print(f"  2. Identify base models (non-quantized variants)")  
             print(f"  3. Slim base models using onnxslim")
-            print(f"  4. Run quantization script with modes: int8, uint8, bnb4, q4, q4f16")
+            print(f"  4. Run quantization script with modes: {', '.join(missing_modes)}")
             print(f"  5. Validate generated models with ONNX checker")
             print(f"  6. Test basic compatibility with Transformers.js")
             print(f"  7. Add {len(missing_variants)} new quantized models to repository")
