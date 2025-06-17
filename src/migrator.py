@@ -172,9 +172,9 @@ class TransformersJSMigrator:
                         
                         if self.mode == "dry_run":
                             self.logger.info(f"[DRY RUN] Would apply {migration.migration_type.value} migration for {repo_id}")
-                            # Mock successful migration for dry run
+                            # Mark as dry run - this should not mark repo as completed
                             self.session_manager.update_migration_status(
-                                session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED
+                                session_id, repo_id, migration.migration_type, MigrationStatus.DRY_RUN
                             )
                             continue
                         

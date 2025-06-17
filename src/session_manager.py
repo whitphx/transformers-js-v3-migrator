@@ -267,9 +267,13 @@ class SessionManager:
         if any(status == MigrationStatus.FAILED.value for status in migration_statuses):
             repo_data["status"] = RepoStatus.FAILED.value
         # If all applicable migrations are completed or skipped, mark repo as completed
+        # Note: DRY_RUN status should not count as completion
         elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value] 
                 for status in migration_statuses):
             repo_data["status"] = RepoStatus.COMPLETED.value
+        # If any migration is in dry run state, keep repo as pending
+        elif any(status == MigrationStatus.DRY_RUN.value for status in migration_statuses):
+            repo_data["status"] = RepoStatus.PENDING.value
         # If any migration is in progress, mark repo as in progress
         elif any(status == MigrationStatus.IN_PROGRESS.value for status in migration_statuses):
             repo_data["status"] = RepoStatus.IN_PROGRESS.value
@@ -307,7 +311,8 @@ class SessionManager:
                         "failed": 0,
                         "skipped": 0,
                         "pending": 0,
-                        "not_applicable": 0
+                        "not_applicable": 0,
+                        "dry_run": 0
                     }
                 
                 migration_status = migration_data["status"]
@@ -319,6 +324,8 @@ class SessionManager:
                     stats["migrations"][migration_type]["skipped"] += 1
                 elif migration_status == MigrationStatus.NOT_APPLICABLE.value:
                     stats["migrations"][migration_type]["not_applicable"] += 1
+                elif migration_status == MigrationStatus.DRY_RUN.value:
+                    stats["migrations"][migration_type]["dry_run"] += 1
                 else:
                     stats["migrations"][migration_type]["pending"] += 1
         

@@ -19,6 +19,7 @@ class MigrationStatus(Enum):
     FAILED = "failed"
     SKIPPED = "skipped"
     NOT_APPLICABLE = "not_applicable"
+    DRY_RUN = "dry_run"
 
 
 @dataclass
