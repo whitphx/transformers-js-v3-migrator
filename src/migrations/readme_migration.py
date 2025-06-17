@@ -2,7 +2,7 @@ import os
 import re
 from typing import Optional
 from ..migration_types import BaseMigration, MigrationType, MigrationResult, MigrationStatus
-from ..lib.ai_readme_migrator import AIReadmeMigrator
+from ..utils.ai_readme_migrator import AIReadmeMigrator
 
 
 class ReadmeSamplesMigration(BaseMigration):
