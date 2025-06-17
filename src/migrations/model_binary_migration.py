@@ -114,19 +114,28 @@ class ModelBinaryMigration(BaseMigration):
                 os.makedirs(input_dir, exist_ok=True)
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Step 3: Copy only base models (non-quantized) to input directory
+                # Step 3: Process base models (slim then copy to input directory)
                 onnx_files = [f for f in os.listdir(onnx_path) if f.endswith('.onnx')]
                 base_models = []
+                
                 for onnx_file in onnx_files:
                     base_name = onnx_file.replace('.onnx', '')
-                    # Only copy base models (not already quantized variants)
+                    # Only process base models (not already quantized variants)
                     if not any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
-                        shutil.copy2(
-                            os.path.join(onnx_path, onnx_file),
-                            os.path.join(input_dir, onnx_file)
-                        )
+                        original_path = os.path.join(onnx_path, onnx_file)
+                        slimmed_path = os.path.join(input_dir, onnx_file)
+                        
+                        # Slim the model before quantization
+                        if not self._slim_model(original_path, slimmed_path, repo_id):
+                            return MigrationResult(
+                                migration_type=self.migration_type,
+                                status=MigrationStatus.FAILED,
+                                changes_made=False,
+                                error_message=f"Failed to slim model {onnx_file}"
+                            )
+                        
                         base_models.append(onnx_file)
-                        self.logger.info(f"Copied base model for quantization: {onnx_file}")
+                        self.logger.info(f"Slimmed and prepared base model: {onnx_file}")
                 
                 if not base_models:
                     self.logger.info(f"No base models found to quantize in {repo_id}")
@@ -137,7 +146,7 @@ class ModelBinaryMigration(BaseMigration):
                         error_message="No base models found for quantization"
                     )
                 
-                # Step 4: Quantize models (only q4 and fp16 variants)
+                # Step 4: Quantize slimmed models (only q4 and fp16 variants)
                 if not self._quantize_models(input_dir, output_dir, repo_id):
                     return MigrationResult(
                         migration_type=self.migration_type,
@@ -246,6 +255,35 @@ for filename in os.listdir(onnx_path):
     def _validate_single_model(self, model_path: str, model_name: str) -> bool:
         """Validate a single ONNX model using isolated dependencies via uv"""
         return self._validate_single_model_isolated(model_path, model_name)
+    
+    def _slim_model(self, input_path: str, output_path: str, repo_id: str) -> bool:
+        """Slim ONNX model using onnxslim with isolated dependencies via uv"""
+        try:
+            requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
+            if not requirements_file.exists():
+                self.logger.error(f"Requirements file not found at {requirements_file}")
+                return False
+            
+            self.logger.info(f"Slimming model: {os.path.basename(input_path)}")
+            
+            # Run onnxslim using uv with isolated dependencies
+            result = subprocess.run([
+                "uv", "run", 
+                "--with-requirements", str(requirements_file),
+                "onnxslim", input_path, output_path
+            ], capture_output=True, text=True, check=True)
+            
+            self.logger.info(f"✓ Successfully slimmed {os.path.basename(input_path)}")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"onnxslim failed for {input_path}: {e.stderr}")
+            if e.stdout:
+                self.logger.error(f"onnxslim stdout: {e.stdout}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error slimming model {input_path}: {e}")
+            return False
     
     def _validate_single_model_isolated(self, model_path: str, model_name: str) -> bool:
         """Validate a single ONNX model using isolated dependencies via uv"""
@@ -414,12 +452,13 @@ print("✓ Model {model_name} is valid")
                 print(task)
             
             print(f"\nProcess overview:")
-            print(f"  1. Use uv to run quantization with isolated dependencies from submodule's requirements.txt")
-            print(f"  2. Copy existing models to temporary workspace")  
-            print(f"  3. Run quantization script with modes: q4, fp16")
-            print(f"  4. Validate generated models with ONNX checker (isolated if needed)")
-            print(f"  5. Test basic compatibility with Transformers.js")
-            print(f"  6. Add {len(missing_variants)} new quantized models to repository")
+            print(f"  1. Use uv to run operations with isolated dependencies from submodule's requirements.txt")
+            print(f"  2. Identify base models (non-quantized variants)")  
+            print(f"  3. Slim base models using onnxslim")
+            print(f"  4. Run quantization script with modes: q4, fp16")
+            print(f"  5. Validate generated models with ONNX checker")
+            print(f"  6. Test basic compatibility with Transformers.js")
+            print(f"  7. Add {len(missing_variants)} new quantized models to repository")
             
             print(f"\nEstimated additional storage: ~{len(missing_variants) * 50}MB (approximate)")
             print(f"Note: Only missing variants will be added - existing models are preserved")
