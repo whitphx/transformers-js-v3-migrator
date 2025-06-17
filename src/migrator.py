@@ -185,19 +185,9 @@ class TransformersJSMigrator:
                     if existing_status in [MigrationStatus.COMPLETED.value, MigrationStatus.NOT_APPLICABLE.value]:
                         self.logger.info(f"Skipping {migration_type_name} for {repo_id} - already {existing_status}")
                         continue
-                    elif existing_status == MigrationStatus.SKIPPED.value:
-                        # Allow re-running skipped migrations - they might succeed now
-                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was skipped, retrying")
-                    elif existing_status == MigrationStatus.DRY_RUN.value and self.mode != "dry_run":
-                        # Previous run was dry-run, but now we're in normal/local mode - allow re-running
-                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was dry-run, now {self.mode}")
-                    elif existing_status == MigrationStatus.LOCAL.value and self.mode == "normal":
-                        # Previous run was local, but now we're in normal mode - allow re-running
-                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was local, now normal")
-                    elif existing_status in [MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value]:
-                        # Same mode as before, or going from normal to dry-run/local - skip
-                        self.logger.info(f"Skipping {migration_type_name} for {repo_id} - already {existing_status}")
-                        continue
+                    elif existing_status in [MigrationStatus.SKIPPED.value, MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value]:
+                        # Allow re-running migrations that didn't complete (can always retry these)
+                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was {existing_status}, now {self.mode}")
                     
                     try:
                         # Create a new instance with verbose mode for this session
