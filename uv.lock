@@ -412,6 +412,9 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
 ]
 
+[package.metadata.requires-dev]
+dev = []
+
 [[package]]
 name = "typing-extensions"
 version = "4.14.0"

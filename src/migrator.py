@@ -104,16 +104,13 @@ class TransformersJSMigrator:
                 # Migrate repository
                 success, pr_url, error_msg = self.migrate_repository(repo, session_id, interactive)
                 
+                # Note: Don't call update_repo_status here - let individual migration status updates
+                # determine the overall repo status via _update_repo_status_from_migrations
+                
                 if success:
-                    self.session_manager.update_repo_status(
-                        session_id, repo, RepoStatus.COMPLETED
-                    )
                     completed_count += 1
                     self.logger.info(f"✓ Successfully migrated {repo}")
                 else:
-                    self.session_manager.update_repo_status(
-                        session_id, repo, RepoStatus.FAILED, error_message=error_msg
-                    )
                     failed_count += 1
                     self.logger.error(f"✗ Failed to migrate {repo}: {error_msg}")
                     
@@ -215,12 +212,29 @@ class TransformersJSMigrator:
                                 )
                                 overall_success = False
                         else:
-                            # No changes or dry run mode
-                            status = MigrationStatus.COMPLETED if result.changes_made else MigrationStatus.SKIPPED
-                            self.session_manager.update_migration_status(
-                                session_id, repo_id, migration.migration_type, status,
-                                files_modified=result.files_modified
-                            )
+                            # Check the actual migration result status
+                            if result.status == MigrationStatus.FAILED:
+                                # Migration failed
+                                self.session_manager.update_migration_status(
+                                    session_id, repo_id, migration.migration_type, 
+                                    MigrationStatus.FAILED, error_message=result.error_message
+                                )
+                                errors.append(f"{migration.migration_type.value} migration failed: {result.error_message}")
+                                overall_success = False
+                                self.logger.error(f"✗ {migration.migration_type.value} migration failed for {repo_id}: {result.error_message}")
+                            elif result.changes_made:
+                                # Migration completed with changes but not uploaded (dry run mode)
+                                self.session_manager.update_migration_status(
+                                    session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED,
+                                    files_modified=result.files_modified
+                                )
+                            else:
+                                # No changes needed or migration was skipped
+                                status = MigrationStatus.COMPLETED if result.status == MigrationStatus.COMPLETED else MigrationStatus.SKIPPED
+                                self.session_manager.update_migration_status(
+                                    session_id, repo_id, migration.migration_type, status,
+                                    files_modified=result.files_modified
+                                )
                             
                     except Exception as e:
                         error_msg = f"Error in {migration.migration_type.value} migration: {str(e)}"

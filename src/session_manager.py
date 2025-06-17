@@ -240,7 +240,13 @@ class SessionManager:
         session_data["repos"][repo_id]["migrations"][migration_type.value] = asdict(migration_progress)
         
         # Update overall repo status based on migration statuses
+        old_status = session_data["repos"][repo_id]["status"]
         self._update_repo_status_from_migrations(session_data, repo_id)
+        new_status = session_data["repos"][repo_id]["status"]
+        
+        # If repo status changed to completed, add to global processed list
+        if old_status != RepoStatus.COMPLETED.value and new_status == RepoStatus.COMPLETED.value:
+            self.add_to_global_processed(repo_id)
         
         # Update stats
         self._update_session_stats(session_data)

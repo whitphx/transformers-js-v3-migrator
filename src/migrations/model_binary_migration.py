@@ -2,6 +2,8 @@ import os
 import subprocess
 import tempfile
 import shutil
+import sys
+from pathlib import Path
 from typing import Optional
 from ..migration_types import BaseMigration, MigrationType, MigrationResult, MigrationStatus
 
@@ -11,6 +13,9 @@ class ModelBinaryMigration(BaseMigration):
     
     def __init__(self):
         super().__init__()
+        # Get the path to the transformers.js submodule
+        self.project_root = Path(__file__).parent.parent.parent
+        self.transformers_js_path = self.project_root / "transformers-js"
     
     @property
     def migration_type(self) -> MigrationType:
@@ -39,6 +44,10 @@ class ModelBinaryMigration(BaseMigration):
         missing_variants = []
         for onnx_file in onnx_files:
             base_name = onnx_file.replace('.onnx', '')
+            
+            # Skip if this model is already a quantized variant
+            if any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
+                continue
             
             # Check for q4 and fp16 variants
             q4_file = f"{base_name}_q4.onnx"
@@ -105,12 +114,27 @@ class ModelBinaryMigration(BaseMigration):
                 os.makedirs(input_dir, exist_ok=True)
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Step 3: Copy existing models to input directory (no modification)
+                # Step 3: Copy only base models (non-quantized) to input directory
                 onnx_files = [f for f in os.listdir(onnx_path) if f.endswith('.onnx')]
+                base_models = []
                 for onnx_file in onnx_files:
-                    shutil.copy2(
-                        os.path.join(onnx_path, onnx_file),
-                        os.path.join(input_dir, onnx_file)
+                    base_name = onnx_file.replace('.onnx', '')
+                    # Only copy base models (not already quantized variants)
+                    if not any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
+                        shutil.copy2(
+                            os.path.join(onnx_path, onnx_file),
+                            os.path.join(input_dir, onnx_file)
+                        )
+                        base_models.append(onnx_file)
+                        self.logger.info(f"Copied base model for quantization: {onnx_file}")
+                
+                if not base_models:
+                    self.logger.info(f"No base models found to quantize in {repo_id}")
+                    return MigrationResult(
+                        migration_type=self.migration_type,
+                        status=MigrationStatus.COMPLETED,
+                        changes_made=False,
+                        error_message="No base models found for quantization"
                     )
                 
                 # Step 4: Quantize models (only q4 and fp16 variants)
@@ -173,106 +197,171 @@ class ModelBinaryMigration(BaseMigration):
     def _validate_onnx_models(self, onnx_path: str, repo_id: str) -> bool:
         """Validate ONNX models using onnx.checker"""
         try:
-            import onnx
+            # Try to import onnx from main environment first
+            try:
+                import onnx
+                
+                for filename in os.listdir(onnx_path):
+                    if filename.endswith('.onnx'):
+                        model_path = os.path.join(onnx_path, filename)
+                        self.logger.info(f"Validating ONNX model: {filename}")
+                        
+                        # Load and check model
+                        onnx.checker.check_model(model_path, full_check=True)
+                        self.logger.info(f"✓ Model {filename} is valid")
+                
+                return True
+                
+            except ImportError:
+                # If onnx not available in main environment, use uv with isolated dependencies
+                self.logger.info("onnx not available in main environment, using isolated validation")
+                return self._validate_onnx_models_isolated(onnx_path, repo_id)
             
-            for filename in os.listdir(onnx_path):
-                if filename.endswith('.onnx'):
-                    model_path = os.path.join(onnx_path, filename)
-                    self.logger.info(f"Validating ONNX model: {filename}")
-                    
-                    # Load and check model
-                    onnx.checker.check_model(model_path, full_check=True)
-                    self.logger.info(f"✓ Model {filename} is valid")
-            
-            return True
-            
-        except ImportError:
-            self.logger.error("onnx package not available for validation")
-            return False
         except Exception as e:
             self.logger.error(f"ONNX validation failed for {repo_id}: {e}")
             return False
     
+    def _validate_onnx_models_isolated(self, onnx_path: str, repo_id: str) -> bool:
+        """Validate ONNX models using isolated dependencies via uv"""
+        try:
+            requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
+            if not requirements_file.exists():
+                self.logger.error(f"Requirements file not found at {requirements_file}")
+                return False
+            
+            # Create a simple validation script
+            validation_script = f'''
+import onnx
+import os
+import sys
+
+onnx_path = "{onnx_path}"
+for filename in os.listdir(onnx_path):
+    if filename.endswith('.onnx'):
+        model_path = os.path.join(onnx_path, filename)
+        print(f"Validating ONNX model: {{filename}}")
+        onnx.checker.check_model(model_path, full_check=True)
+        print(f"✓ Model {{filename}} is valid")
+'''
+            
+            # Run validation using uv with isolated dependencies
+            result = subprocess.run([
+                "uv", "run", 
+                "--with-requirements", str(requirements_file),
+                "python", "-c", validation_script
+            ], capture_output=True, text=True, check=True)
+            
+            self.logger.info("✓ ONNX validation completed via isolated environment")
+            if result.stdout:
+                # Log the validation output
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip():
+                        self.logger.info(line)
+            return True
+                
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Isolated ONNX validation failed for {repo_id}: {e.stderr}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error in isolated ONNX validation for {repo_id}: {e}")
+            return False
+
     def _validate_single_model(self, model_path: str, model_name: str) -> bool:
         """Validate a single ONNX model using onnx.checker"""
         try:
-            import onnx
+            try:
+                import onnx
+                
+                self.logger.info(f"Validating quantized model: {model_name}")
+                onnx.checker.check_model(model_path, full_check=True)
+                self.logger.info(f"✓ Model {model_name} is valid")
+                return True
+                
+            except ImportError:
+                # Use isolated validation if onnx not available in main environment
+                return self._validate_single_model_isolated(model_path, model_name)
             
-            self.logger.info(f"Validating quantized model: {model_name}")
-            onnx.checker.check_model(model_path, full_check=True)
-            self.logger.info(f"✓ Model {model_name} is valid")
-            return True
-            
-        except ImportError:
-            self.logger.error("onnx package not available for validation")
-            return False
         except Exception as e:
             self.logger.error(f"ONNX validation failed for {model_name}: {e}")
             return False
     
+    def _validate_single_model_isolated(self, model_path: str, model_name: str) -> bool:
+        """Validate a single ONNX model using isolated dependencies via uv"""
+        try:
+            requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
+            if not requirements_file.exists():
+                self.logger.warning(f"Requirements file not found, skipping validation of {model_name}")
+                return True
+            
+            validation_script = f'''
+import onnx
+print("Validating quantized model: {model_name}")
+onnx.checker.check_model("{model_path}", full_check=True)
+print("✓ Model {model_name} is valid")
+'''
+            
+            result = subprocess.run([
+                "uv", "run", 
+                "--with-requirements", str(requirements_file),
+                "python", "-c", validation_script
+            ], capture_output=True, text=True, check=True)
+            
+            if result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip():
+                        self.logger.info(line)
+            return True
+                
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Isolated validation failed for {model_name}: {e.stderr}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error in isolated validation for {model_name}: {e}")
+            return False
+    
     def _quantize_models(self, input_folder: str, output_folder: str, repo_id: str) -> bool:
-        """Quantize models using transformers.js quantization script"""
+        """Quantize models using transformers.js quantization script from submodule"""
         try:
             self.logger.info(f"Quantizing models from {input_folder}")
             
-            # Clone transformers.js repository to get quantization script
-            transformers_js_path = self._setup_transformers_js_repo()
-            if not transformers_js_path:
+            # Verify the transformers.js submodule exists
+            if not self.transformers_js_path.exists():
+                self.logger.error("transformers.js submodule not found. Please run 'git submodule update --init'")
                 return False
             
-            # Run the quantization script from transformers.js repo (only q4 and fp16)
+            # Verify requirements file exists
+            requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
+            if not requirements_file.exists():
+                self.logger.error(f"Requirements file not found at {requirements_file}")
+                return False
+            
+            # Run the quantization script using uv with isolated dependencies
+            self.logger.info("Running quantization with isolated dependencies via uv")
+            
+            # Run the quantization script using uv with isolated dependencies
             result = subprocess.run([
+                "uv", "run", 
+                "--with-requirements", str(requirements_file),
                 "python", "-m", "scripts.quantize",
                 "--input_folder", input_folder,
                 "--output_folder", output_folder,
                 "--modes", "q4", "fp16"
-            ], cwd=transformers_js_path, capture_output=True, text=True, check=True)
+            ], cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
+            
+            self.logger.info("✓ Quantization completed via uv")
             
             self.logger.info(f"✓ Successfully quantized models for {repo_id}")
             return True
             
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Quantization failed for {repo_id}: {e.stderr}")
+            if e.stdout:
+                self.logger.error(f"Quantization stdout: {e.stdout}")
             return False
         except Exception as e:
             self.logger.error(f"Error quantizing models for {repo_id}: {e}")
             return False
     
-    def _setup_transformers_js_repo(self) -> Optional[str]:
-        """Clone transformers.js repository to get quantization scripts"""
-        try:
-            import subprocess
-            import tempfile
-            import os
-            
-            # Create temporary directory for transformers.js repo
-            transformers_js_dir = tempfile.mkdtemp(prefix="transformers_js_repo_")
-            
-            # Clone the transformers.js repository
-            self.logger.info("Cloning transformers.js repository for quantization scripts")
-            result = subprocess.run([
-                "git", "clone", 
-                "https://github.com/huggingface/transformers.js.git",
-                transformers_js_dir
-            ], capture_output=True, text=True, check=True)
-            
-            # Verify the scripts directory exists
-            scripts_path = os.path.join(transformers_js_dir, "scripts")
-            quantize_script = os.path.join(scripts_path, "quantize.py")
-            
-            if not os.path.exists(quantize_script):
-                self.logger.error(f"Quantization script not found at {quantize_script}")
-                return None
-            
-            self.logger.info(f"Successfully set up transformers.js repo at {transformers_js_dir}")
-            return transformers_js_dir
-            
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Failed to clone transformers.js repository: {e.stderr}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error setting up transformers.js repository: {e}")
-            return None
     
     def _test_models_with_transformers_js(self, onnx_path: str, repo_id: str) -> bool:
         """Basic validation that models work with Transformers.js"""
@@ -325,6 +414,10 @@ class ModelBinaryMigration(BaseMigration):
         for onnx_file in onnx_files:
             base_name = onnx_file.replace('.onnx', '')
             
+            # Skip if this model is already a quantized variant
+            if any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
+                continue
+            
             # Check for q4 and fp16 variants
             q4_file = f"{base_name}_q4.onnx"
             fp16_file = f"{base_name}_fp16.onnx"
@@ -359,10 +452,10 @@ class ModelBinaryMigration(BaseMigration):
                 print(task)
             
             print(f"\nProcess overview:")
-            print(f"  1. Clone transformers.js repository for quantization scripts")
+            print(f"  1. Use uv to run quantization with isolated dependencies from submodule's requirements.txt")
             print(f"  2. Copy existing models to temporary workspace")  
             print(f"  3. Run quantization script with modes: q4, fp16")
-            print(f"  4. Validate generated models with ONNX checker")
+            print(f"  4. Validate generated models with ONNX checker (isolated if needed)")
             print(f"  5. Test basic compatibility with Transformers.js")
             print(f"  6. Add {len(missing_variants)} new quantized models to repository")
             
