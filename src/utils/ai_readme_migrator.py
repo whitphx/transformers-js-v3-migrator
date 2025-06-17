@@ -296,6 +296,8 @@ console.log(result);
         # Check if changes are trivial (only whitespace/empty line changes)
         if self._are_changes_trivial(original, migrated):
             self.logger.info("README migration contains only trivial changes (whitespace/empty lines) - treating as completed")
+            # Show the diff for preview when trivial changes are detected
+            self._show_trivial_changes_diff(original, migrated)
             return "trivial"
 
         return True
@@ -380,6 +382,55 @@ console.log(result);
                 return True
         
         return False
+
+    def _show_trivial_changes_diff(self, original: str, migrated: str):
+        """Show diff for trivial changes that are being filtered out"""
+        import difflib
+        
+        print(f"\n{'='*80}")
+        print(f"TRIVIAL CHANGES DETECTED - SKIPPING MIGRATION")
+        print(f"{'='*80}")
+        print(f"The AI suggested changes, but they are only trivial (whitespace/empty lines).")
+        print(f"No pull request will be created for these changes.")
+        print(f"{'='*80}")
+        
+        # Generate and display diff
+        diff = difflib.unified_diff(
+            original.splitlines(keepends=True),
+            migrated.splitlines(keepends=True),
+            fromfile="README.md (original)",
+            tofile="README.md (ai-suggested)",
+            lineterm=""
+        )
+        
+        diff_output = list(diff)
+        if diff_output:
+            print("\nTrivial changes that were filtered out:")
+            line_count = 0
+            for line in diff_output:
+                line = line.rstrip()
+                if line.startswith('---') or line.startswith('+++'):
+                    print(f"\033[1m{line}\033[0m")  # Bold
+                elif line.startswith('-'):
+                    print(f"\033[31m{line}\033[0m")  # Red
+                elif line.startswith('+'):
+                    print(f"\033[32m{line}\033[0m")  # Green
+                elif line.startswith('@@'):
+                    print(f"\033[36m{line}\033[0m")  # Cyan
+                else:
+                    print(line)
+                
+                line_count += 1
+                # Limit output to prevent overwhelming the console
+                if line_count > 50:
+                    print(f"\033[33m... (diff truncated after 50 lines)\033[0m")
+                    break
+        else:
+            print("\nNo visible differences in the diff output.")
+        
+        print(f"\n{'='*80}")
+        print(f"Migration marked as SKIPPED - repository will be marked as completed.")
+        print(f"{'='*80}\n")
 
     def _show_changes_and_confirm(self, original: str, migrated: str, repo_id: str) -> str:
         """Show the changes to the user and ask for confirmation"""
