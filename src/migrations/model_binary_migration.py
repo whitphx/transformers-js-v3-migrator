@@ -195,31 +195,8 @@ class ModelBinaryMigration(BaseMigration):
             )
     
     def _validate_onnx_models(self, onnx_path: str, repo_id: str) -> bool:
-        """Validate ONNX models using onnx.checker"""
-        try:
-            # Try to import onnx from main environment first
-            try:
-                import onnx
-                
-                for filename in os.listdir(onnx_path):
-                    if filename.endswith('.onnx'):
-                        model_path = os.path.join(onnx_path, filename)
-                        self.logger.info(f"Validating ONNX model: {filename}")
-                        
-                        # Load and check model
-                        onnx.checker.check_model(model_path, full_check=True)
-                        self.logger.info(f"✓ Model {filename} is valid")
-                
-                return True
-                
-            except ImportError:
-                # If onnx not available in main environment, use uv with isolated dependencies
-                self.logger.info("onnx not available in main environment, using isolated validation")
-                return self._validate_onnx_models_isolated(onnx_path, repo_id)
-            
-        except Exception as e:
-            self.logger.error(f"ONNX validation failed for {repo_id}: {e}")
-            return False
+        """Validate ONNX models using isolated dependencies via uv"""
+        return self._validate_onnx_models_isolated(onnx_path, repo_id)
     
     def _validate_onnx_models_isolated(self, onnx_path: str, repo_id: str) -> bool:
         """Validate ONNX models using isolated dependencies via uv"""
@@ -267,23 +244,8 @@ for filename in os.listdir(onnx_path):
             return False
 
     def _validate_single_model(self, model_path: str, model_name: str) -> bool:
-        """Validate a single ONNX model using onnx.checker"""
-        try:
-            try:
-                import onnx
-                
-                self.logger.info(f"Validating quantized model: {model_name}")
-                onnx.checker.check_model(model_path, full_check=True)
-                self.logger.info(f"✓ Model {model_name} is valid")
-                return True
-                
-            except ImportError:
-                # Use isolated validation if onnx not available in main environment
-                return self._validate_single_model_isolated(model_path, model_name)
-            
-        except Exception as e:
-            self.logger.error(f"ONNX validation failed for {model_name}: {e}")
-            return False
+        """Validate a single ONNX model using isolated dependencies via uv"""
+        return self._validate_single_model_isolated(model_path, model_name)
     
     def _validate_single_model_isolated(self, model_path: str, model_name: str) -> bool:
         """Validate a single ONNX model using isolated dependencies via uv"""

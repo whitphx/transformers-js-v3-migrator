@@ -106,19 +106,22 @@ const output = await transcriber(url);
 
 ## Required Changes:
 1. **Package name**: Change `@xenova/transformers` to `@huggingface/transformers`
-2. **Installation section**: Add installation instructions ONLY if missing and there are code examples
+2. **Installation instructions**: ALWAYS add installation instructions when there are code examples, even if not explicitly missing
 3. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
 4. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks
 5. **Add semicolons**: Ensure statements end with semicolons where appropriate
+6. **Update quantization syntax**: Change `{ quantized: false }` to `{ dtype: "fp32" }` and show available options
 
-## Installation Section (add ONLY if missing):
+## Installation Section Template:
+When adding installation instructions, use this format before the first code example:
+
 ```markdown
-## Usage (Transformers.js)
-
 If you haven't already, you can install the [Transformers.js](https://huggingface.co/docs/transformers.js) JavaScript library from [NPM](https://www.npmjs.com/package/@huggingface/transformers) using:
 ```bash
 npm i @huggingface/transformers
 ```
+
+You can then use the model as follows:
 ```
 
 {example_diff}
