@@ -13,7 +13,7 @@ import src.migrations
 class TransformersJSMigrator:
     def __init__(self, token: Optional[str] = None, mode: str = "normal", verbose: bool = False):
         self.token = token
-        self.mode = mode  # "normal", "dry_run", or "preview"
+        self.mode = mode  # "normal", "dry_run", "preview", or "local"
         self.verbose = verbose
         self.hub_client = HubClient(token)
         self.git_ops = GitOperations(token, verbose=verbose)
@@ -32,6 +32,8 @@ class TransformersJSMigrator:
             self.logger.info("Running in PREVIEW mode - no changes, no tracking")
         elif self.mode == "dry_run":
             self.logger.info("Running in DRY RUN mode - no changes, but tracking progress")
+        elif self.mode == "local":
+            self.logger.info("Running in LOCAL mode - applying changes locally but no commits/pushes")
         else:
             self.logger.info("Running in NORMAL mode - making actual changes")
 
@@ -191,7 +193,14 @@ class TransformersJSMigrator:
                         # Apply the migration
                         result = migration.apply_migration(repo_path, repo_id, interactive)
                         
-                        if result.changes_made and self.mode == "normal":
+                        if result.changes_made and self.mode == "local":
+                            # Local mode: apply changes but don't upload
+                            self.logger.info(f"[LOCAL] Applied {migration.migration_type.value} migration for {repo_id} (no upload)")
+                            self.session_manager.update_migration_status(
+                                session_id, repo_id, migration.migration_type, MigrationStatus.LOCAL,
+                                files_modified=result.files_modified
+                            )
+                        elif result.changes_made and self.mode == "normal":
                             # Upload changes for this specific migration using HF Hub
                             pr_url = self.git_ops.upload_changes(
                                 repo_path, repo_id, 
@@ -232,9 +241,9 @@ class TransformersJSMigrator:
                                 errors.append(f"{migration.migration_type.value} migration failed: {result.error_message}")
                                 overall_success = False
                                 self.logger.error(f"✗ {migration.migration_type.value} migration failed for {repo_id}: {result.error_message}")
-                            elif result.changes_made and self.mode != "normal":
+                            elif result.changes_made and self.mode not in ["normal", "local"]:
                                 # Migration completed with changes but not uploaded (dry run mode only)
-                                # In normal mode, if we reach here it means upload wasn't attempted due to no changes_made
+                                # In normal/local mode, if we reach here it means upload wasn't attempted due to no changes_made
                                 self.session_manager.update_migration_status(
                                     session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED,
                                     files_modified=result.files_modified

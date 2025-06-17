@@ -269,12 +269,12 @@ class SessionManager:
         if any(status == MigrationStatus.FAILED.value for status in migration_statuses):
             repo_data["status"] = RepoStatus.PENDING.value  # Changed from FAILED to PENDING
         # If all applicable migrations are completed or skipped, mark repo as completed
-        # Note: DRY_RUN status should not count as completion
+        # Note: DRY_RUN and LOCAL status should not count as completion
         elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value] 
                 for status in migration_statuses):
             repo_data["status"] = RepoStatus.COMPLETED.value
-        # If any migration is in dry run state, keep repo as pending
-        elif any(status == MigrationStatus.DRY_RUN.value for status in migration_statuses):
+        # If any migration is in dry run or local state, keep repo as pending
+        elif any(status in [MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value] for status in migration_statuses):
             repo_data["status"] = RepoStatus.PENDING.value
         # If any migration is in progress, mark repo as in progress
         elif any(status == MigrationStatus.IN_PROGRESS.value for status in migration_statuses):
@@ -314,7 +314,8 @@ class SessionManager:
                         "skipped": 0,
                         "pending": 0,
                         "not_applicable": 0,
-                        "dry_run": 0
+                        "dry_run": 0,
+                        "local": 0
                     }
                 
                 migration_status = migration_data["status"]
@@ -328,6 +329,8 @@ class SessionManager:
                     stats["migrations"][migration_type]["not_applicable"] += 1
                 elif migration_status == MigrationStatus.DRY_RUN.value:
                     stats["migrations"][migration_type]["dry_run"] += 1
+                elif migration_status == MigrationStatus.LOCAL.value:
+                    stats["migrations"][migration_type]["local"] += 1
                 else:
                     stats["migrations"][migration_type]["pending"] += 1
         

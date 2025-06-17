@@ -12,6 +12,7 @@ def cli():
 @cli.command()
 @click.option('--dry-run', is_flag=True, help='Run without making actual changes but track progress')
 @click.option('--preview', is_flag=True, help='Preview mode - no changes, no tracking')
+@click.option('--local', is_flag=True, help='Local mode - apply changes locally but skip commits/pushes')
 @click.option('--limit', default=10, help='Limit number of repositories to process')
 @click.option('--token', help='Hugging Face token for API access (or set HF_TOKEN env var)')
 @click.option('--org', help='Filter repositories by organization name')
@@ -20,10 +21,12 @@ def cli():
 @click.option('--resume', is_flag=True, help='Resume from existing session')
 @click.option('--non-interactive', is_flag=True, help='Run without user prompts (auto-approve AI changes)')
 @click.option('--verbose', is_flag=True, help='Enable verbose mode with detailed error tracebacks')
-def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool, non_interactive: bool, verbose: bool):
+def migrate(dry_run: bool, preview: bool, local: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool, non_interactive: bool, verbose: bool):
     """Run the migration process"""
-    if dry_run and preview:
-        click.echo("Error: Cannot use both --dry-run and --preview at the same time")
+    # Check for mutually exclusive mode options
+    mode_flags = [dry_run, preview, local]
+    if sum(mode_flags) > 1:
+        click.echo("Error: Cannot use multiple mode flags (--dry-run, --preview, --local) at the same time")
         return
     
     # Get token from CLI argument or environment variable
@@ -34,6 +37,8 @@ def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo
         mode = "preview"
     elif dry_run:
         mode = "dry_run"
+    elif local:
+        mode = "local"
     else:
         mode = "normal"
     

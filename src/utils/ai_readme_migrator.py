@@ -176,7 +176,7 @@ console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (un
 4. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
 5. **Add semicolons**: Ensure statements end with semicolons where appropriate
 6. **Keep code formats**: Keep the code formats such as white spaces, line breaks, etc. as is.
-7. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp3b2", "fp16", "q8", "q4"'
+7. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp3b2", "fp16", "q8", "q4"'. Place this line after the pipeline creation line.
 
 ## Installation Section Template:
 When adding installation instructions, use this format before the first code example:
