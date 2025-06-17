@@ -110,7 +110,7 @@ const output = await transcriber(url);
 3. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
 4. **Remove inline install comments**: Remove `// npm i @xenova/transformers` comments from code blocks
 5. **Add semicolons**: Ensure statements end with semicolons where appropriate
-6. **Update quantization syntax**: Change `{ quantized: false }` to `{ dtype: "fp32" }` and show available options
+6. **Update quantization syntax**: Change `{{ quantized: false }}` to `{{ dtype: "fp32" }}` and show available options
 
 ## Installation Section Template:
 When adding installation instructions, use this format before the first code example:

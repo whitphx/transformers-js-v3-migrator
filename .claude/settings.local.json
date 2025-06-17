@@ -4,7 +4,8 @@
       "Bash(uv run:*)",
       "Bash(mkdir:*)",
       "Bash(mv:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }
