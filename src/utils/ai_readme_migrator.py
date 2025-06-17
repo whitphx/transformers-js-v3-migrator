@@ -51,19 +51,38 @@ class AIReadmeMigrator:
 
             # Interactive mode: show changes and ask for confirmation
             if interactive:
-                user_choice = self._show_changes_and_confirm(content, migrated_content, repo_id)
-                if user_choice == "accept":
-                    pass  # Continue with migration
-                elif user_choice == "reject_skip":
-                    self.logger.info(f"User declined changes for {repo_id} - leaving undone for future attempts")
-                    return "REJECT_SKIP"  # Special return value to indicate skip without marking done
-                elif user_choice == "reject_done":
-                    self.logger.info(f"User declined changes for {repo_id} - marking as done")
-                    return None  # Standard rejection, will be marked as completed/skipped
-                else:
-                    # This shouldn't happen, but handle gracefully
-                    self.logger.info(f"User declined changes for {repo_id}")
-                    return None
+                while True:
+                    user_choice = self._show_changes_and_confirm(content, migrated_content, repo_id)
+                    if user_choice == "accept":
+                        break  # Continue with migration
+                    elif user_choice == "reject_skip":
+                        self.logger.info(f"User declined changes for {repo_id} - leaving undone for future attempts")
+                        return "REJECT_SKIP"  # Special return value to indicate skip without marking done
+                    elif user_choice == "reject_done":
+                        self.logger.info(f"User declined changes for {repo_id} - marking as done")
+                        return None  # Standard rejection, will be marked as completed/skipped
+                    elif user_choice == "retry_llm":
+                        self.logger.info(f"User requested LLM retry for {repo_id}")
+                        # Ask the LLM again with a retry prompt
+                        migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                        if not migrated_content:
+                            self.logger.error(f"LLM retry failed for {repo_id}")
+                            return None
+                        # Continue the loop to show new changes
+                        continue
+                    elif user_choice == "edit_direct":
+                        self.logger.info(f"User requested direct editing for {repo_id}")
+                        # Allow user to edit the content directly
+                        migrated_content = self._edit_content_directly(migrated_content, repo_id)
+                        if not migrated_content:
+                            self.logger.info(f"User cancelled direct editing for {repo_id}")
+                            return None
+                        # Continue the loop to show the edited changes
+                        continue
+                    else:
+                        # This shouldn't happen, but handle gracefully
+                        self.logger.info(f"User declined changes for {repo_id}")
+                        return None
 
             self.logger.info(f"AI README migration completed successfully for {repo_id}")
             return migrated_content
@@ -487,7 +506,7 @@ console.log(result);
 
         # Ask for confirmation
         while True:
-            response = input("Do you want to apply these changes? [y/ns/nd/d] (y=yes, ns=no+skip, nd=no+done, d=show diff again): ").lower().strip()
+            response = input("Do you want to apply these changes? [y/ns/nd/d/r/e] (y=yes, ns=no+skip, nd=no+done, d=diff, r=retry LLM, e=edit): ").lower().strip()
 
             if response in ['y', 'yes']:
                 return "accept"
@@ -516,12 +535,161 @@ console.log(result);
                     else:
                         print(line)
                 continue
+            elif response in ['r', 'retry']:
+                return "retry_llm"  # Ask the LLM again
+            elif response in ['e', 'edit']:
+                return "edit_direct"  # Allow direct editing
             else:
                 print("Please enter:")
                 print("  y  = Accept changes")
                 print("  ns = Skip and leave undone (can retry later)")
                 print("  nd = Skip and mark done (won't retry)")
                 print("  d  = Show diff again")
+                print("  r  = Ask LLM to try again")
+                print("  e  = Edit the content directly")
+
+    def _retry_with_llm(self, original: str, previous_attempt: str, repo_id: str) -> Optional[str]:
+        """Ask the LLM to try again with feedback about the previous attempt"""
+        try:
+            self.logger.info(f"Retrying LLM migration for {repo_id} with feedback")
+            
+            # Create a retry prompt that includes the previous attempt
+            retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id)
+            
+            # Call Claude API with retry prompt
+            response = self.client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=4000,
+                temperature=0.2,  # Slightly higher temperature for variety
+                messages=[
+                    {
+                        "role": "user", 
+                        "content": retry_prompt
+                    }
+                ]
+            )
+            
+            new_migrated_content = response.content[0].text.strip()
+            
+            # Validate the retry response
+            validation_result = self._validate_migration(original, new_migrated_content)
+            if validation_result == "trivial":
+                self.logger.info(f"LLM retry for {repo_id} resulted in trivial changes")
+                return None
+            elif not validation_result:
+                self.logger.error(f"LLM retry validation failed for {repo_id}")
+                return None
+            
+            self.logger.info(f"LLM retry completed successfully for {repo_id}")
+            return new_migrated_content
+            
+        except Exception as e:
+            if self.verbose:
+                import traceback
+                self.logger.error(f"Error during LLM retry for {repo_id}: {e}")
+                self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+            else:
+                self.logger.error(f"Error during LLM retry for {repo_id}: {e}")
+            return None
+
+    def _create_retry_prompt(self, original: str, previous_attempt: str, repo_id: str) -> str:
+        """Create a retry prompt that asks the LLM to improve on the previous attempt"""
+        prompt = f"""You are retrying a README migration for a Transformers.js repository. The user was not satisfied with your previous attempt and wants you to try a different approach.
+
+## CRITICAL REQUIREMENTS (same as before):
+1. **Output only the migrated README content** - NO wrapper text, explanations, or meta-commentary
+2. **Preserve original structure** - Keep the same sections, formatting, and overall organization
+3. **Minimal changes only** - Only update what's necessary for v3 compatibility
+4. **PRESERVE FRONTMATTER** - Keep all YAML frontmatter (content between --- lines) exactly as-is
+
+## Required Changes:
+1. **Package name**: Change `@xenova/transformers` to `@huggingface/transformers`
+2. **Installation instructions**: Add installation instructions when there are code examples
+3. **Modern JavaScript**: Use `const` instead of `let`, add semicolons
+4. **Update pipeline configuration**: Replace `{{ quantized: false }}` with `{{ dtype: "fp32" }}` and add comment about options
+
+## Repository: {repo_id}
+
+## Original README Content:
+{original}
+
+## Previous Attempt (user was not satisfied):
+{previous_attempt}
+
+## Instructions for Retry:
+- Try a different approach than the previous attempt
+- Consider adding more/less content as needed
+- Focus on making the changes more substantial and helpful
+- Ensure installation instructions are clear and prominent
+- Make sure code examples are complete and functional
+
+## NEW MIGRATED README (output only this):"""
+
+        return prompt
+
+    def _edit_content_directly(self, content: str, repo_id: str) -> Optional[str]:
+        """Allow user to edit the content directly using their preferred editor"""
+        import tempfile
+        import subprocess
+        import os
+        
+        try:
+            print(f"\n{'='*80}")
+            print(f"DIRECT EDITING MODE for {repo_id}")
+            print(f"{'='*80}")
+            print("Opening the content in your default editor...")
+            print("Make your changes and save the file, then close the editor to continue.")
+            print(f"{'='*80}")
+            
+            # Create a temporary file with the content
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as tmp_file:
+                tmp_file.write(content)
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # Try to get the user's preferred editor
+                editor = os.environ.get('EDITOR') or os.environ.get('VISUAL')
+                
+                if not editor:
+                    # Try common editors in order of preference
+                    for potential_editor in ['nano', 'vim', 'vi', 'code', 'notepad']:
+                        if subprocess.run(['which', potential_editor], capture_output=True).returncode == 0:
+                            editor = potential_editor
+                            break
+                
+                if not editor:
+                    print("No suitable editor found. Please set the EDITOR environment variable.")
+                    return None
+                
+                # Open the editor
+                result = subprocess.run([editor, tmp_file_path])
+                
+                if result.returncode != 0:
+                    print(f"Editor exited with error code {result.returncode}")
+                    return None
+                
+                # Read the edited content
+                with open(tmp_file_path, 'r', encoding='utf-8') as f:
+                    edited_content = f.read()
+                
+                # Check if content was actually changed
+                if edited_content.strip() == content.strip():
+                    print("No changes detected in the edited content.")
+                    return None
+                
+                print("Content has been edited successfully!")
+                return edited_content
+                
+            finally:
+                # Clean up the temporary file
+                try:
+                    os.unlink(tmp_file_path)
+                except OSError:
+                    pass
+                    
+        except Exception as e:
+            self.logger.error(f"Error during direct editing for {repo_id}: {e}")
+            return None
 
     def is_available(self) -> bool:
         """Check if AI README migration is available"""
