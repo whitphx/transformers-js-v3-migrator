@@ -216,10 +216,11 @@ class ModelBinaryMigration(BaseMigration):
                     base_name.endswith(f"_{mode}") for mode in self.QUANTIZATION_MODES
                 )
                 
-                # Skip if this has "_quantized" suffix
+                # Skip if this has "_quantized" or "_merged" suffix
                 is_legacy_quantized = base_name.endswith("_quantized")
+                is_merged_model = base_name.endswith("_merged")
                 
-                if not is_quantized_variant and not is_legacy_quantized:
+                if not is_quantized_variant and not is_legacy_quantized and not is_merged_model:
                     base_models.append(filename)
         
         return sorted(base_models)
