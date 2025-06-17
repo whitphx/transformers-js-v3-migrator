@@ -204,7 +204,7 @@ class TransformersJSMigrator:
                                 
                                 self.logger.info(f"✓ {migration.migration_type.value} migration completed for {repo_id}")
                             else:
-                                error_msg = f"Failed to upload {migration.migration_type.value} changes"
+                                error_msg = f"Failed to upload {migration.migration_type.value} changes - leaving repo undone for retry"
                                 errors.append(error_msg)
                                 self.session_manager.update_migration_status(
                                     session_id, repo_id, migration.migration_type, 
@@ -222,8 +222,9 @@ class TransformersJSMigrator:
                                 errors.append(f"{migration.migration_type.value} migration failed: {result.error_message}")
                                 overall_success = False
                                 self.logger.error(f"✗ {migration.migration_type.value} migration failed for {repo_id}: {result.error_message}")
-                            elif result.changes_made:
-                                # Migration completed with changes but not uploaded (dry run mode)
+                            elif result.changes_made and self.mode != "normal":
+                                # Migration completed with changes but not uploaded (dry run mode only)
+                                # In normal mode, if we reach here it means upload wasn't attempted due to no changes_made
                                 self.session_manager.update_migration_status(
                                     session_id, repo_id, migration.migration_type, MigrationStatus.COMPLETED,
                                     files_modified=result.files_modified

@@ -200,8 +200,8 @@ class SessionManager:
         # Update stats
         self._update_session_stats(session_data)
         
-        # If completed successfully, add to global processed list
-        # Note: Even dry_run completions are added to global processed to avoid reprocessing
+        # Only add to global processed list if status is COMPLETED
+        # This ensures repos are only marked as globally processed when all migrations succeed
         if status == RepoStatus.COMPLETED:
             self.add_to_global_processed(repo_id)
         
@@ -244,7 +244,8 @@ class SessionManager:
         self._update_repo_status_from_migrations(session_data, repo_id)
         new_status = session_data["repos"][repo_id]["status"]
         
-        # If repo status changed to completed, add to global processed list
+        # Only add to global processed list when repo status changes to completed
+        # This ensures upload success is required before marking as globally processed
         if old_status != RepoStatus.COMPLETED.value and new_status == RepoStatus.COMPLETED.value:
             self.add_to_global_processed(repo_id)
         
@@ -263,9 +264,10 @@ class SessionManager:
         
         migration_statuses = [m["status"] for m in migrations.values()]
         
-        # If any migration failed, mark repo as failed
+        # If any migration failed, repo should remain PENDING for retry (not FAILED)
+        # This allows the repo to be retried in future sessions
         if any(status == MigrationStatus.FAILED.value for status in migration_statuses):
-            repo_data["status"] = RepoStatus.FAILED.value
+            repo_data["status"] = RepoStatus.PENDING.value  # Changed from FAILED to PENDING
         # If all applicable migrations are completed or skipped, mark repo as completed
         # Note: DRY_RUN status should not count as completion
         elif all(status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value] 

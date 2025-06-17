@@ -125,7 +125,7 @@ class GitOperations:
             
         except Exception as e:
             self.logger.error(f"Failed to upload changes for {repo_id}: {e}")
-            raise
+            return None  # Return None instead of raising to allow retry
 
     def cleanup_temp_directory(self, temp_path: str):
         """Clean up temporary working directory"""
