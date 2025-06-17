@@ -107,16 +107,33 @@ class GitOperations:
                 
                 # Update PR description (title is automatically set from commit message)
                 try:
-                    # Update PR description by editing the first comment
-                    self.hf_api.edit_discussion_comment(
+                    # Get discussion details to find the first comment ID (PR description)
+                    discussion_details = self.hf_api.get_discussion_details(
                         repo_id=repo_id,
-                        discussion_num=str(pr_num),  # Convert to string in case API expects string
-                        comment_id=0,  # First comment is the description
-                        new_content=migration_description,
+                        discussion_num=pr_num,
                         repo_type="model"
                     )
                     
-                    self.logger.info(f"Updated PR description for {repo_id}")
+                    # Find the first comment (PR description) - it should be the first event
+                    first_comment_id = None
+                    for event in discussion_details.events:
+                        if hasattr(event, 'id') and hasattr(event, 'type') and event.type == 'comment':
+                            first_comment_id = event.id
+                            break
+                    
+                    if first_comment_id:
+                        # Update PR description by editing the first comment
+                        self.hf_api.edit_discussion_comment(
+                            repo_id=repo_id,
+                            discussion_num=pr_num,
+                            comment_id=first_comment_id,
+                            new_content=migration_description,
+                            repo_type="model"
+                        )
+                        
+                        self.logger.info(f"Updated PR description for {repo_id}")
+                    else:
+                        self.logger.warning(f"Could not find first comment in PR {pr_num} for {repo_id}")
                     
                 except Exception as e:
                     if self.verbose:
