@@ -23,40 +23,35 @@ class ModelBinaryMigration(BaseMigration):
     
     @property
     def description(self) -> str:
-        return "Add missing quantized ONNX model variants (q4, fp16) for Transformers.js v3"
+        return "Add missing quantized ONNX model variants (int8, uint8, bnb4, q4, q4f16) for Transformers.js v3"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
-        """Check if repository has ONNX models that need quantization"""
+        """Check if repository has model.onnx that needs quantization"""
         onnx_path = os.path.join(repo_path, "onnx")
         
         if not os.path.exists(onnx_path):
             return False
         
-        # Check for ONNX files
-        onnx_files = [f for f in os.listdir(onnx_path) if f.endswith('.onnx')]
-        if not onnx_files:
+        # Check for the main model.onnx file
+        model_file = os.path.join(onnx_path, "model.onnx")
+        if not os.path.exists(model_file):
             return False
         
-        # Check for missing quantized variants (q4, fp16) - only add what's missing
+        # Check for missing quantized variants - only add what's missing
         existing_files = set(os.listdir(onnx_path))
         
-        # Determine which quantized variants are missing
+        # Determine which quantized variants are missing for model.onnx
         missing_variants = []
-        for onnx_file in onnx_files:
-            base_name = onnx_file.replace('.onnx', '')
-            
-            # Skip if this model is already a quantized variant
-            if any(suffix in base_name.lower() for suffix in ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']):
-                continue
-            
-            # Check for all quantization variants
-            variant_suffixes = ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']
-            variant_names = ['int8', 'uint8', 'bnb4', 'q4', 'q4f16']
-            
-            for suffix, name in zip(variant_suffixes, variant_names):
-                variant_file = f"{base_name}{suffix}.onnx"
-                if variant_file not in existing_files:
-                    missing_variants.append(name)
+        base_name = "model"
+        
+        # Check for all quantization variants
+        variant_suffixes = ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']
+        variant_names = ['int8', 'uint8', 'bnb4', 'q4', 'q4f16']
+        
+        for suffix, name in zip(variant_suffixes, variant_names):
+            variant_file = f"{base_name}{suffix}.onnx"
+            if variant_file not in existing_files:
+                missing_variants.append(name)
         
         if not missing_variants:
             self.logger.info(f"Repository {repo_id} already has all quantized variants (int8, uint8, bnb4, q4, q4f16)")
@@ -114,37 +109,30 @@ class ModelBinaryMigration(BaseMigration):
                 os.makedirs(input_dir, exist_ok=True)
                 os.makedirs(output_dir, exist_ok=True)
                 
-                # Step 3: Process base models (slim then copy to input directory)
-                onnx_files = [f for f in os.listdir(onnx_path) if f.endswith('.onnx')]
-                base_models = []
+                # Step 3: Process the main model.onnx file (slim then copy to input directory)
+                model_file = "model.onnx"
+                original_path = os.path.join(onnx_path, model_file)
+                slimmed_path = os.path.join(input_dir, model_file)
                 
-                for onnx_file in onnx_files:
-                    base_name = onnx_file.replace('.onnx', '')
-                    # Only process base models (not already quantized variants)
-                    if not any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
-                        original_path = os.path.join(onnx_path, onnx_file)
-                        slimmed_path = os.path.join(input_dir, onnx_file)
-                        
-                        # Slim the model before quantization
-                        if not self._slim_model(original_path, slimmed_path, repo_id):
-                            return MigrationResult(
-                                migration_type=self.migration_type,
-                                status=MigrationStatus.FAILED,
-                                changes_made=False,
-                                error_message=f"Failed to slim model {onnx_file}"
-                            )
-                        
-                        base_models.append(onnx_file)
-                        self.logger.info(f"Slimmed and prepared base model: {onnx_file}")
-                
-                if not base_models:
-                    self.logger.info(f"No base models found to quantize in {repo_id}")
+                if not os.path.exists(original_path):
+                    self.logger.info(f"No model.onnx found in {repo_id}")
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.COMPLETED,
                         changes_made=False,
-                        error_message="No base models found for quantization"
+                        error_message="No model.onnx found for quantization"
                     )
+                
+                # Slim the model before quantization
+                if not self._slim_model(original_path, slimmed_path, repo_id):
+                    return MigrationResult(
+                        migration_type=self.migration_type,
+                        status=MigrationStatus.FAILED,
+                        changes_made=False,
+                        error_message=f"Failed to slim {model_file}"
+                    )
+                
+                self.logger.info(f"Slimmed and prepared model: {model_file}")
                 
                 # Step 4: Quantize slimmed models (only q4 and fp16 variants)
                 if not self._quantize_models(input_dir, output_dir, repo_id):
@@ -404,50 +392,48 @@ print("✓ Model {model_name} is valid")
     def _preview_and_confirm(self, onnx_path: str, repo_id: str) -> str:
         """Preview the quantization tasks and ask for user confirmation"""
         
-        # Analyze what needs to be done
+        # Analyze what needs to be done for model.onnx
         existing_files = set(os.listdir(onnx_path))
-        onnx_files = [f for f in existing_files if f.endswith('.onnx')]
+        model_file = "model.onnx"
         
         missing_variants = []
         tasks_preview = []
         
-        for onnx_file in onnx_files:
-            base_name = onnx_file.replace('.onnx', '')
-            
-            # Skip if this model is already a quantized variant
-            if any(suffix in base_name.lower() for suffix in ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']):
-                continue
-            
-            # Check for all quantization variants
-            variant_configs = [
-                ('_int8', 'INT8 quantized variant'),
-                ('_uint8', 'UINT8 quantized variant'),
-                ('_bnb4', 'BNB4 quantized variant'),
-                ('_q4', 'Q4 quantized variant'),
-                ('_q4f16', 'Q4F16 quantized variant')
-            ]
-            
-            for suffix, description in variant_configs:
-                variant_file = f"{base_name}{suffix}.onnx"
-                if variant_file not in existing_files:
-                    missing_variants.append(variant_file)
-                    tasks_preview.append(f"  • Generate {variant_file} ({description})")
+        # Check if model.onnx exists
+        if model_file not in existing_files:
+            print(f"No model.onnx found in repository")
+            return "reject_done"
+        
+        # Check for all quantization variants of model.onnx
+        base_name = "model"
+        variant_configs = [
+            ('_int8', 'INT8 quantized variant'),
+            ('_uint8', 'UINT8 quantized variant'),
+            ('_bnb4', 'BNB4 quantized variant'),
+            ('_q4', 'Q4 quantized variant'),
+            ('_q4f16', 'Q4F16 quantized variant')
+        ]
+        
+        for suffix, description in variant_configs:
+            variant_file = f"{base_name}{suffix}.onnx"
+            if variant_file not in existing_files:
+                missing_variants.append(variant_file)
+                tasks_preview.append(f"  • Generate {variant_file} ({description})")
         
         print(f"\n{'='*80}")
         print(f"Model Binary Quantization Preview for: {repo_id}")
         print(f"{'='*80}")
-        print(f"Commit message: ⚡ Add quantized model variants (q4, fp16)")
+        print(f"Commit message: ⚡ Add quantized model variants (int8, uint8, bnb4, q4, q4f16)")
         print(f"{'='*80}")
         
-        print(f"\nExisting ONNX models found:")
-        for onnx_file in sorted(onnx_files):
-            file_path = os.path.join(onnx_path, onnx_file)
-            try:
-                file_size = os.path.getsize(file_path)
-                size_mb = file_size / (1024 * 1024)
-                print(f"  • {onnx_file} ({size_mb:.1f} MB)")
-            except:
-                print(f"  • {onnx_file}")
+        print(f"\nSource model:")
+        model_path = os.path.join(onnx_path, model_file)
+        try:
+            file_size = os.path.getsize(model_path)
+            size_mb = file_size / (1024 * 1024)
+            print(f"  • {model_file} ({size_mb:.1f} MB)")
+        except:
+            print(f"  • {model_file}")
         
         print(f"\nQuantization tasks to perform:")
         if tasks_preview:
