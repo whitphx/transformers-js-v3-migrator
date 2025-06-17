@@ -161,11 +161,41 @@ class TransformersJSMigrator:
             repo_path = self.git_ops.download_repo(repo_id)
             
             try:
-                # Get applicable migrations for this repository
-                applicable_migrations = migration_registry.get_applicable_migrations(repo_path, repo_id, verbose=self.verbose)
+                # Get all migrations and check applicability
+                all_migrations = migration_registry.get_all_migrations()
+                applicable_migrations = []
+                
+                # Check each migration type and track its status
+                for migration_class in all_migrations:
+                    try:
+                        # Create a new instance with verbose mode for this session
+                        migration = migration_class.__class__(verbose=self.verbose)
+                        
+                        if migration.is_applicable(repo_path, repo_id):
+                            applicable_migrations.append(migration)
+                            self.logger.debug(f"Migration {migration.migration_type.value} is applicable to {repo_id}")
+                        else:
+                            # Mark non-applicable migrations as NOT_APPLICABLE
+                            self.session_manager.update_migration_status(
+                                session_id, repo_id, migration.migration_type, MigrationStatus.NOT_APPLICABLE
+                            )
+                            self.logger.debug(f"Migration {migration.migration_type.value} is not applicable to {repo_id}")
+                    except Exception as e:
+                        # Mark migrations with errors as FAILED
+                        error_msg = f"Error checking applicability: {str(e)}"
+                        self.session_manager.update_migration_status(
+                            session_id, repo_id, migration_class.migration_type, MigrationStatus.FAILED, error_message=error_msg
+                        )
+                        if self.verbose:
+                            import traceback
+                            self.logger.error(f"Error checking applicability of {migration_class.migration_type.value} for {repo_id}: {e}")
+                            self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                        else:
+                            self.logger.error(f"Error checking applicability of {migration_class.migration_type.value} for {repo_id}: {e}")
                 
                 if not applicable_migrations:
                     self.logger.info(f"No applicable migrations for {repo_id}")
+                    # All migrations have been marked as NOT_APPLICABLE, so repo should be marked as completed
                     return True, None, None
                 
                 overall_success = True
