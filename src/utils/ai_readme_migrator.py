@@ -184,6 +184,22 @@ console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (un
 '''''
 """
 
+        example_diff3 = """
+## Example migration (v2 -> v3):
+
+BEFORE:
+'''''
+const classifier = await pipeline('image-classification', 'Xenova/convnext-tiny-224');
+'''''
+
+AFTER:
+'''''
+const classifier = await pipeline('image-classification', 'Xenova/convnext-tiny-224', {
+    dtype: "fp32",  // Options: "fp32", "fp16", "q8", "q4"
+});
+'''''
+"""
+
         prompt = f"""You are migrating a Transformers.js model repository README from v2 to v3. Your task is to update the README content while preserving its original structure and purpose.
 
 ## CRITICAL REQUIREMENTS:
@@ -200,7 +216,7 @@ console.log(cos_sim(output[0].data, output[1].data));  // 0.9399812684139274 (un
 5. **Modern JavaScript**: Use `const` instead of `let` for variables that aren't reassigned
 6. **Add semicolons**: Ensure statements end with semicolons where appropriate
 7. **Keep code formats**: Keep the code formats such as white spaces, line breaks, etc. as is
-8. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp32", "fp16", "q8", "q4"'. Place this line after the pipeline creation line
+8. **Update third argument of pipeline, the pipeline configuration**: Delete `{{ quantized: false }}` and add `{{ dtype: "fp32" }}` with a comment saying '// Options: "fp32", "fp16", "q8", "q4"'. Place the option in the next line after the pipeline creation line.
 
 ## Installation Section Template:
 When adding installation instructions, use this format before the first code example:
@@ -232,6 +248,8 @@ console.log(result);
 
 {example_diff2}
 
+{example_diff3}
+
 ## STRICT GUIDELINES:
 - **NEVER remove frontmatter** - Keep all YAML metadata between --- lines exactly as-is
 - **ADD installation instructions** - Always add them before code examples if missing
@@ -255,10 +273,10 @@ console.log(result);
 
     def _validate_migration(self, original: str, migrated: str):
         """Validate the AI README migration result
-        
+
         Returns:
             True: Migration is valid and has meaningful changes
-            False: Migration failed validation 
+            False: Migration failed validation
             "trivial": Migration is valid but only has trivial changes
         """
 
@@ -295,7 +313,7 @@ console.log(result);
         # Allow more flexibility for short READMEs that get expanded with installation instructions
         length_ratio = len(migrated) / len(original)
         original_length = len(original)
-        
+
         # For very short READMEs (< 500 chars), allow up to 5x expansion (adding install instructions)
         # For medium READMEs (500-2000 chars), allow up to 3x expansion
         # For longer READMEs (> 2000 chars), allow up to 2x expansion
@@ -305,7 +323,7 @@ console.log(result);
             max_ratio = 3.0
         else:
             max_ratio = 2.0
-        
+
         if length_ratio < 0.5 or length_ratio > max_ratio:
             self.logger.error(f"README migration result length seems wrong: {length_ratio:.2f}x original (original: {original_length} chars, max allowed: {max_ratio}x)")
             return False
@@ -336,23 +354,23 @@ console.log(result);
 
     def _are_changes_trivial(self, original: str, migrated: str) -> bool:
         """Use LLM to determine if changes are trivial or meaningful"""
-        
+
         # Quick check: if content is identical, it's trivial
         if original.strip() == migrated.strip():
             self.logger.debug("Changes are trivial - content is identical")
             return True
-        
+
         # Quick check: if only whitespace differences, it's trivial
         original_no_whitespace = ''.join(original.split())
         migrated_no_whitespace = ''.join(migrated.split())
         if original_no_whitespace == migrated_no_whitespace:
             self.logger.debug("Changes are trivial - only whitespace differences")
             return True
-        
+
         try:
             # Use LLM to determine if changes are trivial
             assessment_prompt = self._create_trivial_assessment_prompt(original, migrated)
-            
+
             response = self.client.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=200,
@@ -364,9 +382,9 @@ console.log(result);
                     }
                 ]
             )
-            
+
             assessment = response.content[0].text.strip().lower()
-            
+
             # Parse the LLM response
             if assessment.startswith("trivial"):
                 self.logger.debug("LLM determined changes are trivial")
@@ -378,7 +396,7 @@ console.log(result);
                 # If unclear response, err on the side of meaningful
                 self.logger.warning(f"Unclear LLM assessment: {assessment}, treating as meaningful")
                 return False
-                
+
         except Exception as e:
             # If LLM call fails, err on the side of meaningful changes
             self.logger.warning(f"Failed to assess changes with LLM: {e}, treating as meaningful")
@@ -386,9 +404,9 @@ console.log(result);
 
     def _create_trivial_assessment_prompt(self, original: str, migrated: str) -> str:
         """Create a prompt for the LLM to assess if changes are trivial or meaningful"""
-        
+
         import difflib
-        
+
         # Generate a unified diff
         diff_lines = list(difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -397,9 +415,9 @@ console.log(result);
             tofile="migrated",
             lineterm=""
         ))
-        
+
         diff_text = ''.join(diff_lines) if diff_lines else "No differences detected"
-        
+
         prompt = f"""You are evaluating whether changes to a README file are trivial or meaningful for a Transformers.js v2 to v3 migration.
 
 TRIVIAL changes include:
@@ -429,14 +447,14 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
     def _show_trivial_changes_diff(self, original: str, migrated: str):
         """Show diff for trivial changes that are being filtered out"""
         import difflib
-        
+
         print(f"\n{'='*80}")
         print(f"TRIVIAL CHANGES DETECTED - SKIPPING MIGRATION")
         print(f"{'='*80}")
         print(f"The AI suggested changes, but they are only trivial (whitespace/empty lines).")
         print(f"No pull request will be created for these changes.")
         print(f"{'='*80}")
-        
+
         # Generate and display diff
         diff = difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -445,7 +463,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
             tofile="README.md (ai-suggested)",
             lineterm=""
         )
-        
+
         diff_output = list(diff)
         if diff_output:
             print("\nTrivial changes that were filtered out:")
@@ -462,7 +480,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                     print(f"\033[36m{line}\033[0m")  # Cyan
                 else:
                     print(line)
-                
+
                 line_count += 1
                 # Limit output to prevent overwhelming the console
                 if line_count > 50:
@@ -470,7 +488,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                     break
         else:
             print("\nNo visible differences in the diff output.")
-        
+
         print(f"\n{'='*80}")
         print(f"Migration marked as SKIPPED - repository will be marked as completed.")
         print(f"{'='*80}\n")
@@ -563,10 +581,10 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
         """Ask the LLM to try again with feedback about the previous attempt"""
         try:
             self.logger.info(f"Retrying LLM migration for {repo_id} with feedback")
-            
+
             # Create a retry prompt that includes the previous attempt
             retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id)
-            
+
             # Call Claude API with retry prompt
             response = self.client.messages.create(
                 model="claude-3-haiku-20240307",
@@ -574,14 +592,14 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                 temperature=0.2,  # Slightly higher temperature for variety
                 messages=[
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": retry_prompt
                     }
                 ]
             )
-            
+
             new_migrated_content = response.content[0].text.strip()
-            
+
             # Validate the retry response
             validation_result = self._validate_migration(original, new_migrated_content)
             if validation_result == "trivial":
@@ -590,10 +608,10 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
             elif not validation_result:
                 self.logger.error(f"LLM retry validation failed for {repo_id}")
                 return None
-            
+
             self.logger.info(f"LLM retry completed successfully for {repo_id}")
             return new_migrated_content
-            
+
         except Exception as e:
             if self.verbose:
                 import traceback
@@ -643,7 +661,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
         import tempfile
         import subprocess
         import os
-        
+
         try:
             print(f"\n{'='*80}")
             print(f"DIRECT EDITING MODE for {repo_id}")
@@ -651,53 +669,53 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
             print("Opening the content in your default editor...")
             print("Make your changes and save the file, then close the editor to continue.")
             print(f"{'='*80}")
-            
+
             # Create a temporary file with the content
             with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as tmp_file:
                 tmp_file.write(content)
                 tmp_file_path = tmp_file.name
-            
+
             try:
                 # Try to get the user's preferred editor
                 editor = os.environ.get('EDITOR') or os.environ.get('VISUAL')
-                
+
                 if not editor:
                     # Try common editors in order of preference
                     for potential_editor in ['nano', 'vim', 'vi', 'code', 'notepad']:
                         if subprocess.run(['which', potential_editor], capture_output=True).returncode == 0:
                             editor = potential_editor
                             break
-                
+
                 if not editor:
                     print("No suitable editor found. Please set the EDITOR environment variable.")
                     return None
-                
+
                 # Open the editor
                 result = subprocess.run([editor, tmp_file_path])
-                
+
                 if result.returncode != 0:
                     print(f"Editor exited with error code {result.returncode}")
                     return None
-                
+
                 # Read the edited content
                 with open(tmp_file_path, 'r', encoding='utf-8') as f:
                     edited_content = f.read()
-                
+
                 # Check if content was actually changed
                 if edited_content.strip() == content.strip():
                     print("No changes detected in the edited content.")
                     return None
-                
+
                 print("Content has been edited successfully!")
                 return edited_content
-                
+
             finally:
                 # Clean up the temporary file
                 try:
                     os.unlink(tmp_file_path)
                 except OSError:
                     pass
-                    
+
         except Exception as e:
             self.logger.error(f"Error during direct editing for {repo_id}: {e}")
             return None
