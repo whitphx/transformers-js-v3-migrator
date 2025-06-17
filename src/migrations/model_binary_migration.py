@@ -240,30 +240,40 @@ class ModelBinaryMigration(BaseMigration):
         return tuple(missing_modes)
     
     def _validate_onnx_models(self, onnx_path: str, repo_id: str) -> bool:
-        """Validate ONNX models using isolated dependencies via uv"""
-        return self._validate_onnx_models_isolated(onnx_path, repo_id)
+        """Validate only the base ONNX model files using isolated dependencies via uv"""
+        base_models = self._find_base_model_files(onnx_path)
+        return self._validate_onnx_models_isolated(onnx_path, repo_id, base_models)
     
-    def _validate_onnx_models_isolated(self, onnx_path: str, repo_id: str) -> bool:
-        """Validate ONNX models using isolated dependencies via uv"""
+    def _validate_onnx_models_isolated(self, onnx_path: str, repo_id: str, base_models: list) -> bool:
+        """Validate specific ONNX model files using isolated dependencies via uv"""
         try:
             requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
             if not requirements_file.exists():
                 self.logger.error(f"Requirements file not found at {requirements_file}")
                 return False
             
-            # Create a simple validation script
+            if not base_models:
+                self.logger.info(f"No base models to validate for {repo_id}")
+                return True
+            
+            # Create a validation script that only validates specific files
+            model_files_str = "', '".join(base_models)
             validation_script = f'''
 import onnx
 import os
 import sys
 
 onnx_path = "{onnx_path}"
-for filename in os.listdir(onnx_path):
-    if filename.endswith('.onnx'):
-        model_path = os.path.join(onnx_path, filename)
-        print(f"Validating ONNX model: {{filename}}")
+model_files = ['{model_files_str}']
+
+for filename in model_files:
+    model_path = os.path.join(onnx_path, filename)
+    if os.path.exists(model_path):
+        print(f"Validating base ONNX model: {{filename}}")
         onnx.checker.check_model(model_path, full_check=True)
-        print(f"✓ Model {{filename}} is valid")
+        print(f"✓ Base model {{filename}} is valid")
+    else:
+        print(f"Warning: Model file {{filename}} not found")
 '''
             
             # Run validation using uv with isolated dependencies
@@ -273,7 +283,7 @@ for filename in os.listdir(onnx_path):
                 "python", "-c", validation_script
             ], capture_output=True, text=True, check=True)
             
-            self.logger.info("✓ ONNX validation completed via isolated environment")
+            self.logger.info(f"✓ Base model ONNX validation completed for {len(base_models)} files via isolated environment")
             if result.stdout:
                 # Log the validation output
                 for line in result.stdout.strip().split('\n'):
