@@ -335,85 +335,96 @@ console.log(result);
         return True
 
     def _are_changes_trivial(self, original: str, migrated: str) -> bool:
-        """Check if the changes are only trivial (whitespace, empty lines, etc.)"""
+        """Use LLM to determine if changes are trivial or meaningful"""
         
-        # Normalize both texts for comparison
-        def normalize_text(text: str) -> str:
-            """Normalize text by removing extra whitespace and empty lines"""
-            lines = []
-            for line in text.split('\n'):
-                # Strip trailing whitespace but preserve leading whitespace (indentation)
-                normalized_line = line.rstrip()
-                lines.append(normalized_line)
-            
-            # Remove consecutive empty lines (keep at most one empty line between content)
-            normalized_lines = []
-            prev_empty = False
-            for line in lines:
-                is_empty = len(line.strip()) == 0
-                if not (is_empty and prev_empty):  # Skip if both current and previous are empty
-                    normalized_lines.append(line)
-                prev_empty = is_empty
-            
-            # Remove trailing empty lines
-            while normalized_lines and len(normalized_lines[-1].strip()) == 0:
-                normalized_lines.pop()
-            
-            return '\n'.join(normalized_lines)
-        
-        # Normalize both versions
-        original_normalized = normalize_text(original)
-        migrated_normalized = normalize_text(migrated)
-        
-        # If normalized versions are identical, changes are trivial
-        if original_normalized == migrated_normalized:
-            self.logger.debug("Changes are trivial - only whitespace/empty line differences")
+        # Quick check: if content is identical, it's trivial
+        if original.strip() == migrated.strip():
+            self.logger.debug("Changes are trivial - content is identical")
             return True
         
-        # Check if the only changes are in whitespace characters
-        # Remove all whitespace and compare
+        # Quick check: if only whitespace differences, it's trivial
         original_no_whitespace = ''.join(original.split())
         migrated_no_whitespace = ''.join(migrated.split())
-        
         if original_no_whitespace == migrated_no_whitespace:
             self.logger.debug("Changes are trivial - only whitespace differences")
             return True
         
-        # Check if changes are minimal (less than 2% of content changed)
-        import difflib
-        differ = difflib.SequenceMatcher(None, original_normalized, migrated_normalized)
-        similarity_ratio = differ.ratio()
-        
-        if similarity_ratio > 0.98:  # More than 98% similar
-            # Get the actual differences to see if they're trivial
-            diff_operations = differ.get_opcodes()
-            significant_changes = False
+        try:
+            # Use LLM to determine if changes are trivial
+            assessment_prompt = self._create_trivial_assessment_prompt(original, migrated)
             
-            for op, i1, i2, j1, j2 in diff_operations:
-                if op == 'equal':
-                    continue
-                elif op in ['delete', 'insert', 'replace']:
-                    original_chunk = original_normalized[i1:i2]
-                    migrated_chunk = migrated_normalized[j1:j2]
-                    
-                    # Check if this change is more than just whitespace/punctuation
-                    original_words = set(original_chunk.lower().split())
-                    migrated_words = set(migrated_chunk.lower().split())
-                    
-                    # If there are new meaningful words or significant word removals, it's not trivial
-                    if len(original_words.symmetric_difference(migrated_words)) > 0:
-                        # Check if the differences are just punctuation or very minor
-                        word_diff = original_words.symmetric_difference(migrated_words)
-                        meaningful_diff = any(len(word) > 2 and word.isalnum() for word in word_diff)
-                        if meaningful_diff:
-                            significant_changes = True
-                            break
+            response = self.client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=200,
+                temperature=0.0,  # Use deterministic output
+                messages=[
+                    {
+                        "role": "user",
+                        "content": assessment_prompt
+                    }
+                ]
+            )
             
-            if not significant_changes:
-                self.logger.debug("Changes are trivial - minimal content differences")
+            assessment = response.content[0].text.strip().lower()
+            
+            # Parse the LLM response
+            if assessment.startswith("trivial"):
+                self.logger.debug("LLM determined changes are trivial")
                 return True
+            elif assessment.startswith("meaningful"):
+                self.logger.debug("LLM determined changes are meaningful")
+                return False
+            else:
+                # If unclear response, err on the side of meaningful
+                self.logger.warning(f"Unclear LLM assessment: {assessment}, treating as meaningful")
+                return False
+                
+        except Exception as e:
+            # If LLM call fails, err on the side of meaningful changes
+            self.logger.warning(f"Failed to assess changes with LLM: {e}, treating as meaningful")
+            return False
+
+    def _create_trivial_assessment_prompt(self, original: str, migrated: str) -> str:
+        """Create a prompt for the LLM to assess if changes are trivial or meaningful"""
         
-        return False
+        import difflib
+        
+        # Generate a unified diff
+        diff_lines = list(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            migrated.splitlines(keepends=True),
+            fromfile="original",
+            tofile="migrated",
+            lineterm=""
+        ))
+        
+        diff_text = ''.join(diff_lines) if diff_lines else "No differences detected"
+        
+        prompt = f"""You are evaluating whether changes to a README file are trivial or meaningful for a Transformers.js v2 to v3 migration.
+
+TRIVIAL changes include:
+- Only whitespace, formatting, or empty line changes
+- Minor punctuation or capitalization changes
+- Reordering of identical content
+- Changes that don't affect functionality or user understanding
+
+MEANINGFUL changes include:
+- Adding or updating package names (@xenova/transformers → @huggingface/transformers)
+- Adding installation instructions or usage examples
+- Adding or updating code configuration (like {{ dtype: "fp32" }})
+- Adding comments that explain options or usage
+- Any changes that improve user understanding or functionality
+- Any changes related to v3 migration requirements
+
+Here are the changes:
+
+```diff
+{diff_text}
+```
+
+Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether these changes provide value to users migrating from Transformers.js v2 to v3."""
+
+        return prompt
 
     def _show_trivial_changes_diff(self, original: str, migrated: str):
         """Show diff for trivial changes that are being filtered out"""
