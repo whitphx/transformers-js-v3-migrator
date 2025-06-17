@@ -165,8 +165,34 @@ class TransformersJSMigrator:
                 all_migrations = migration_registry.get_all_migrations()
                 applicable_migrations = []
                 
+                # Load existing session data to check previous migration statuses
+                session_data = self.session_manager.load_session(session_id)
+                existing_repo_data = session_data.get("repos", {}).get(repo_id, {})
+                existing_migrations = existing_repo_data.get("migrations", {})
+                
                 # Check each migration type and track its status
                 for migration_class in all_migrations:
+                    migration_type_name = migration_class.migration_type.value
+                    
+                    # Check if this migration was already completed in a previous run
+                    existing_migration = existing_migrations.get(migration_type_name, {})
+                    existing_status = existing_migration.get("status")
+                    
+                    # Skip migrations that are already completed (but allow re-running dry-run and local modes)
+                    if existing_status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value]:
+                        self.logger.info(f"Skipping {migration_type_name} for {repo_id} - already {existing_status}")
+                        continue
+                    elif existing_status == MigrationStatus.DRY_RUN.value and self.mode != "dry_run":
+                        # Previous run was dry-run, but now we're in normal/local mode - allow re-running
+                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was dry-run, now {self.mode}")
+                    elif existing_status == MigrationStatus.LOCAL.value and self.mode == "normal":
+                        # Previous run was local, but now we're in normal mode - allow re-running
+                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was local, now normal")
+                    elif existing_status in [MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value]:
+                        # Same mode as before, or going from normal to dry-run/local - skip
+                        self.logger.info(f"Skipping {migration_type_name} for {repo_id} - already {existing_status}")
+                        continue
+                    
                     try:
                         # Create a new instance with verbose mode for this session
                         migration = migration_class.__class__(verbose=self.verbose)
