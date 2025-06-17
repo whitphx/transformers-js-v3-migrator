@@ -8,8 +8,8 @@ from ..utils.ai_readme_migrator import AIReadmeMigrator
 class ReadmeSamplesMigration(BaseMigration):
     """Migration for updating README.md sample code using AI"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, verbose: bool = False):
+        super().__init__(verbose)
         self.ai_migrator = None
     
     @property
@@ -46,7 +46,7 @@ class ReadmeSamplesMigration(BaseMigration):
             
             # Initialize AI migrator if not already done
             if self.ai_migrator is None:
-                self.ai_migrator = AIReadmeMigrator()
+                self.ai_migrator = AIReadmeMigrator(verbose=self.verbose)
             
             # Use AI service for migration
             updated_content = self.ai_migrator.migrate_readme_content(original_content, repo_id, interactive=interactive)

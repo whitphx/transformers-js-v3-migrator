@@ -7,10 +7,11 @@ import logging
 
 
 class GitOperations:
-    def __init__(self, token: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, verbose: bool = False):
         self.logger = logging.getLogger(__name__)
         self.repo_path = None
         self.token = token
+        self.verbose = verbose
         self.hf_api = HfApi(token=token)
 
     def download_repo(self, repo_id: str) -> str:
@@ -109,7 +110,7 @@ class GitOperations:
                     # Update PR description by editing the first comment
                     self.hf_api.edit_discussion_comment(
                         repo_id=repo_id,
-                        discussion_num=pr_num,
+                        discussion_num=str(pr_num),  # Convert to string in case API expects string
                         comment_id=0,  # First comment is the description
                         new_content=migration_description,
                         repo_type="model"
@@ -118,13 +119,23 @@ class GitOperations:
                     self.logger.info(f"Updated PR description for {repo_id}")
                     
                 except Exception as e:
-                    self.logger.warning(f"Failed to update PR description for {repo_id}: {e}")
+                    if self.verbose:
+                        import traceback
+                        self.logger.warning(f"Failed to update PR description for {repo_id}: {e}")
+                        self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                    else:
+                        self.logger.warning(f"Failed to update PR description for {repo_id}: {e}")
                     # Continue anyway - PR exists even if description update failed
             
             return pr_url
             
         except Exception as e:
-            self.logger.error(f"Failed to upload changes for {repo_id}: {e}")
+            if self.verbose:
+                import traceback
+                self.logger.error(f"Failed to upload changes for {repo_id}: {e}")
+                self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+            else:
+                self.logger.error(f"Failed to upload changes for {repo_id}: {e}")
             return None  # Return None instead of raising to allow retry
 
     def cleanup_temp_directory(self, temp_path: str):

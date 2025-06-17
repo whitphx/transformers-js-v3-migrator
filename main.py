@@ -19,7 +19,8 @@ def cli():
 @click.option('--exclude-org', multiple=True, help='Exclude repositories from these organizations')
 @click.option('--resume', is_flag=True, help='Resume from existing session')
 @click.option('--non-interactive', is_flag=True, help='Run without user prompts (auto-approve AI changes)')
-def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool, non_interactive: bool):
+@click.option('--verbose', is_flag=True, help='Enable verbose mode with detailed error tracebacks')
+def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo_name: str, exclude_org: tuple, resume: bool, non_interactive: bool, verbose: bool):
     """Run the migration process"""
     if dry_run and preview:
         click.echo("Error: Cannot use both --dry-run and --preview at the same time")
@@ -36,7 +37,7 @@ def migrate(dry_run: bool, preview: bool, limit: int, token: str, org: str, repo
     else:
         mode = "normal"
     
-    migrator = TransformersJSMigrator(token=hf_token, mode=mode)
+    migrator = TransformersJSMigrator(token=hf_token, mode=mode, verbose=verbose)
     migrator.run_migration(
         limit=limit,
         org_filter=org,

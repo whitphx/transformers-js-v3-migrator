@@ -7,12 +7,13 @@ from anthropic import Anthropic
 class AIReadmeMigrator:
     """AI-powered README migrator using external LLM API for Transformers.js v2 to v3 migration"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, verbose: bool = False):
         self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required for AI README migration")
         
         self.client = Anthropic(api_key=self.api_key)
+        self.verbose = verbose
         self.logger = logging.getLogger(__name__)
     
     def migrate_readme_content(self, content: str, repo_id: str, interactive: bool = True) -> Optional[str]:
@@ -64,7 +65,12 @@ class AIReadmeMigrator:
             return migrated_content
                 
         except Exception as e:
-            self.logger.error(f"Error during AI README migration for {repo_id}: {e}")
+            if self.verbose:
+                import traceback
+                self.logger.error(f"Error during AI README migration for {repo_id}: {e}")
+                self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+            else:
+                self.logger.error(f"Error during AI README migration for {repo_id}: {e}")
             return None
     
     def _create_migration_prompt(self, content: str, repo_id: str) -> str:

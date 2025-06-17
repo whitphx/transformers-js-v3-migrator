@@ -14,8 +14,8 @@ class ModelBinaryMigration(BaseMigration):
     # Define available quantization modes
     QUANTIZATION_MODES = ("int8", "uint8", "bnb4", "q4", "q4f16")
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, verbose: bool = False):
+        super().__init__(verbose)
         # Get the path to the transformers.js submodule
         self.project_root = Path(__file__).parent.parent.parent
         self.transformers_js_path = self.project_root / "transformers-js"

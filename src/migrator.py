@@ -11,18 +11,23 @@ import src.migrations
 
 
 class TransformersJSMigrator:
-    def __init__(self, token: Optional[str] = None, mode: str = "normal"):
+    def __init__(self, token: Optional[str] = None, mode: str = "normal", verbose: bool = False):
         self.token = token
         self.mode = mode  # "normal", "dry_run", or "preview"
+        self.verbose = verbose
         self.hub_client = HubClient(token)
-        self.git_ops = GitOperations(token)
+        self.git_ops = GitOperations(token, verbose=verbose)
         self.migration_rules = MigrationRules()
         self.session_manager = SessionManager()
         
-        logging.basicConfig(level=logging.INFO)
+        # Set logging level based on verbose mode
+        log_level = logging.DEBUG if verbose else logging.INFO
+        logging.basicConfig(level=log_level)
         self.logger = logging.getLogger(__name__)
         
         # Log mode information
+        if self.verbose:
+            self.logger.info("Running in VERBOSE mode - detailed error information will be shown")
         if self.mode == "preview":
             self.logger.info("Running in PREVIEW mode - no changes, no tracking")
         elif self.mode == "dry_run":
@@ -116,11 +121,16 @@ class TransformersJSMigrator:
                     
             except Exception as e:
                 error_msg = str(e)
+                if self.verbose:
+                    import traceback
+                    self.logger.error(f"✗ Failed to migrate {repo}: {error_msg}")
+                    self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                else:
+                    self.logger.error(f"✗ Failed to migrate {repo}: {error_msg}")
                 self.session_manager.update_repo_status(
                     session_id, repo, RepoStatus.FAILED, error_message=error_msg
                 )
                 failed_count += 1
-                self.logger.error(f"✗ Failed to migrate {repo}: {error_msg}")
         
         # Final summary
         self.logger.info(f"Migration completed! Session: {session_id}")
@@ -150,7 +160,7 @@ class TransformersJSMigrator:
             
             try:
                 # Get applicable migrations for this repository
-                applicable_migrations = migration_registry.get_applicable_migrations(repo_path, repo_id)
+                applicable_migrations = migration_registry.get_applicable_migrations(repo_path, repo_id, verbose=self.verbose)
                 
                 if not applicable_migrations:
                     self.logger.info(f"No applicable migrations for {repo_id}")
@@ -240,12 +250,17 @@ class TransformersJSMigrator:
                     except Exception as e:
                         error_msg = f"Error in {migration.migration_type.value} migration: {str(e)}"
                         errors.append(error_msg)
+                        if self.verbose:
+                            import traceback
+                            self.logger.error(error_msg)
+                            self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                        else:
+                            self.logger.error(error_msg)
                         self.session_manager.update_migration_status(
                             session_id, repo_id, migration.migration_type, 
                             MigrationStatus.FAILED, error_message=error_msg
                         )
                         overall_success = False
-                        self.logger.error(error_msg)
             
                 # Return overall result
                 if overall_success:
@@ -258,4 +273,8 @@ class TransformersJSMigrator:
                 self.git_ops.cleanup_temp_directory(repo_path)
                 
         except Exception as e:
+            if self.verbose:
+                import traceback
+                self.logger.error(f"Repository migration failed for {repo_id}: {e}")
+                self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
             return False, None, str(e)

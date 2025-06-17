@@ -39,7 +39,8 @@ class MigrationResult:
 class BaseMigration(ABC):
     """Base class for all migration types"""
     
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
         self.logger = logging.getLogger(self.__class__.__name__)
     
     @property
@@ -120,18 +121,25 @@ class MigrationRegistry:
         """Get all registered migrations"""
         return list(self._migrations.values())
     
-    def get_applicable_migrations(self, repo_path: str, repo_id: str) -> List[BaseMigration]:
-        """Get all migrations applicable to a repository"""
+    def get_applicable_migrations(self, repo_path: str, repo_id: str, verbose: bool = False) -> List[BaseMigration]:
+        """Get all migrations applicable to a repository with verbose mode"""
         applicable = []
-        for migration in self._migrations.values():
+        for migration_class in self._migrations.values():
             try:
+                # Create a new instance with verbose mode for this session
+                migration = migration_class.__class__(verbose=verbose)
                 if migration.is_applicable(repo_path, repo_id):
                     applicable.append(migration)
                     self.logger.debug(f"Migration {migration.migration_type.value} is applicable to {repo_id}")
                 else:
                     self.logger.debug(f"Migration {migration.migration_type.value} is not applicable to {repo_id}")
             except Exception as e:
-                self.logger.error(f"Error checking applicability of {migration.migration_type.value} for {repo_id}: {e}")
+                if verbose:
+                    import traceback
+                    self.logger.error(f"Error checking applicability of {migration_class.migration_type.value} for {repo_id}: {e}")
+                    self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
+                else:
+                    self.logger.error(f"Error checking applicability of {migration_class.migration_type.value} for {repo_id}: {e}")
         
         return applicable
 
