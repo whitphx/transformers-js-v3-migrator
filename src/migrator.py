@@ -37,9 +37,9 @@ class TransformersJSMigrator:
         else:
             self.logger.info("Running in NORMAL mode - making actual changes")
 
-    def run_migration(self, limit: int = 10, org_filter: Optional[str] = None, 
-                     repo_name_filter: Optional[str] = None, exclude_orgs: Optional[List[str]] = None,
-                     resume: bool = False, interactive: bool = True):
+    def run_migration(self, limit: int = 10, exact_repo: Optional[str] = None,
+                     repo_search: Optional[str] = None, author_filter: Optional[str] = None, 
+                     exclude_orgs: Optional[List[str]] = None, resume: bool = False, interactive: bool = True):
         """Run the migration process for Transformers.js v2 to v3"""
         
         # Handle preview mode - no session tracking
@@ -49,8 +49,9 @@ class TransformersJSMigrator:
             # Search for repositories using Transformers.js
             all_repos = self.hub_client.search_transformersjs_repos(
                 limit=limit,
-                org_filter=org_filter,
-                repo_name_filter=repo_name_filter,
+                exact_repo=exact_repo,
+                repo_search=repo_search,
+                author_filter=author_filter,
                 exclude_orgs=exclude_orgs
             )
             
@@ -65,8 +66,9 @@ class TransformersJSMigrator:
         # Create session configuration for normal and dry_run modes
         config = SessionConfig(
             limit=limit,
-            org_filter=org_filter,
-            repo_name_filter=repo_name_filter,
+            exact_repo=exact_repo,
+            repo_search=repo_search,
+            author_filter=author_filter,
             exclude_orgs=exclude_orgs or [],
             dry_run=(self.mode == "dry_run")
         )
@@ -82,8 +84,9 @@ class TransformersJSMigrator:
         # Search for repositories using Transformers.js
         all_repos = self.hub_client.search_transformersjs_repos(
             limit=limit,
-            org_filter=org_filter,
-            repo_name_filter=repo_name_filter,
+            exact_repo=exact_repo,
+            repo_search=repo_search,
+            author_filter=author_filter,
             exclude_orgs=exclude_orgs
         )
         
@@ -178,10 +181,13 @@ class TransformersJSMigrator:
                     existing_migration = existing_migrations.get(migration_type_name, {})
                     existing_status = existing_migration.get("status")
                     
-                    # Skip migrations that are already completed (but allow re-running dry-run and local modes)
-                    if existing_status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value, MigrationStatus.NOT_APPLICABLE.value]:
+                    # Skip migrations that are already completed (but allow re-running skipped migrations)
+                    if existing_status in [MigrationStatus.COMPLETED.value, MigrationStatus.NOT_APPLICABLE.value]:
                         self.logger.info(f"Skipping {migration_type_name} for {repo_id} - already {existing_status}")
                         continue
+                    elif existing_status == MigrationStatus.SKIPPED.value:
+                        # Allow re-running skipped migrations - they might succeed now
+                        self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was skipped, retrying")
                     elif existing_status == MigrationStatus.DRY_RUN.value and self.mode != "dry_run":
                         # Previous run was dry-run, but now we're in normal/local mode - allow re-running
                         self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was dry-run, now {self.mode}")

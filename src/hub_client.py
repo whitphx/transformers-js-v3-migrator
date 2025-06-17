@@ -8,12 +8,36 @@ class HubClient:
         self.api = HfApi(token=token)
         self.logger = logging.getLogger(__name__)
 
-    def search_transformersjs_repos(self, limit: int = 10, org_filter: Optional[str] = None, 
-                                   repo_name_filter: Optional[str] = None, 
+    def search_transformersjs_repos(self, limit: int = 10, exact_repo: Optional[str] = None,
+                                   repo_search: Optional[str] = None, author_filter: Optional[str] = None,
                                    exclude_orgs: Optional[List[str]] = None) -> List[str]:
-        """Search for model repositories that use Transformers.js library with filtering options"""
+        """Search for model repositories that use Transformers.js library with filtering options
+        
+        Args:
+            limit: Maximum number of repositories to return
+            exact_repo: Exact repository name (format: org/repo-name) - returns only this repo if it exists
+            repo_search: Search repositories by name pattern
+            author_filter: Filter repositories by author/organization name
+            exclude_orgs: Exclude repositories from these organizations
+        """
         try:
-            # Build search parameters
+            # Handle exact repository match
+            if exact_repo:
+                self.logger.info(f"Looking for exact repository: {exact_repo}")
+                try:
+                    # Check if the exact repository exists and has transformers.js library
+                    repo_info = self.api.repo_info(exact_repo, repo_type="model")
+                    if repo_info and repo_info.library_name == "transformers.js":
+                        self.logger.info(f"Found exact repository: {exact_repo}")
+                        return [exact_repo]
+                    else:
+                        self.logger.warning(f"Repository {exact_repo} not found or doesn't use transformers.js")
+                        return []
+                except Exception as e:
+                    self.logger.error(f"Error checking exact repository {exact_repo}: {e}")
+                    return []
+            
+            # Build search parameters for general search
             search_params = {
                 "library": "transformers.js",
                 "limit": limit,
@@ -22,14 +46,14 @@ class HubClient:
             }
             
             # Add author filter if specified
-            if org_filter:
-                search_params["author"] = org_filter
-                self.logger.info(f"Filtering by author: {org_filter}")
+            if author_filter:
+                search_params["author"] = author_filter
+                self.logger.info(f"Filtering by author: {author_filter}")
             
-            # Add model name filter if specified
-            if repo_name_filter:
-                search_params["search"] = repo_name_filter
-                self.logger.info(f"Filtering by model name: {repo_name_filter}")
+            # Add repository name search if specified
+            if repo_search:
+                search_params["search"] = repo_search
+                self.logger.info(f"Searching repositories by name: {repo_search}")
             
             models = list_models(**search_params)
             repo_ids = [model.id for model in models]

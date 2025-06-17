@@ -47,8 +47,9 @@ class RepoProgress:
 @dataclass
 class SessionConfig:
     limit: int
-    org_filter: Optional[str] = None
-    repo_name_filter: Optional[str] = None
+    exact_repo: Optional[str] = None
+    repo_search: Optional[str] = None
+    author_filter: Optional[str] = None
     exclude_orgs: List[str] = None
     dry_run: bool = False
 
@@ -69,7 +70,7 @@ class SessionManager:
     def generate_session_id(self, config: SessionConfig) -> str:
         """Generate a unique session ID based on search parameters"""
         # Create a string representation of the search parameters
-        params_str = f"{config.org_filter or 'all'}_{config.repo_name_filter or 'all'}_{','.join(sorted(config.exclude_orgs))}"
+        params_str = f"{config.exact_repo or 'none'}_{config.repo_search or 'none'}_{config.author_filter or 'none'}_{','.join(sorted(config.exclude_orgs))}"
         
         # Generate a hash for the session ID
         session_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]

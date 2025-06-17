@@ -273,9 +273,22 @@ console.log(result);
             return False
 
         # Check if the content structure is preserved (reasonable length)
+        # Allow more flexibility for short READMEs that get expanded with installation instructions
         length_ratio = len(migrated) / len(original)
-        if length_ratio < 0.7 or length_ratio > 1.5:
-            self.logger.error(f"README migration result length seems wrong: {length_ratio:.2f}x original")
+        original_length = len(original)
+        
+        # For very short READMEs (< 500 chars), allow up to 5x expansion (adding install instructions)
+        # For medium READMEs (500-2000 chars), allow up to 3x expansion
+        # For longer READMEs (> 2000 chars), allow up to 2x expansion
+        if original_length < 500:
+            max_ratio = 5.0
+        elif original_length < 2000:
+            max_ratio = 3.0
+        else:
+            max_ratio = 2.0
+        
+        if length_ratio < 0.5 or length_ratio > max_ratio:
+            self.logger.error(f"README migration result length seems wrong: {length_ratio:.2f}x original (original: {original_length} chars, max allowed: {max_ratio}x)")
             return False
 
         # Check that frontmatter is preserved if it existed in original
