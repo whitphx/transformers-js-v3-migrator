@@ -46,20 +46,20 @@ class ModelBinaryMigration(BaseMigration):
             base_name = onnx_file.replace('.onnx', '')
             
             # Skip if this model is already a quantized variant
-            if any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
+            if any(suffix in base_name.lower() for suffix in ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']):
                 continue
             
-            # Check for q4 and fp16 variants
-            q4_file = f"{base_name}_q4.onnx"
-            fp16_file = f"{base_name}_fp16.onnx"
+            # Check for all quantization variants
+            variant_suffixes = ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']
+            variant_names = ['int8', 'uint8', 'bnb4', 'q4', 'q4f16']
             
-            if q4_file not in existing_files:
-                missing_variants.append('q4')
-            if fp16_file not in existing_files:
-                missing_variants.append('fp16')
+            for suffix, name in zip(variant_suffixes, variant_names):
+                variant_file = f"{base_name}{suffix}.onnx"
+                if variant_file not in existing_files:
+                    missing_variants.append(name)
         
         if not missing_variants:
-            self.logger.info(f"Repository {repo_id} already has all quantized variants (q4, fp16)")
+            self.logger.info(f"Repository {repo_id} already has all quantized variants (int8, uint8, bnb4, q4, q4f16)")
             return False
         
         self.logger.info(f"Repository {repo_id} is missing quantized variants: {set(missing_variants)}")
@@ -345,7 +345,7 @@ print("✓ Model {model_name} is valid")
                 "python", "-m", "scripts.quantize",
                 "--input_folder", input_folder,
                 "--output_folder", output_folder,
-                "--modes", "q4", "fp16"
+                "--modes", "int8", "uint8", "bnb4", "q4", "q4f16"
             ], cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
             
             self.logger.info("✓ Quantization completed via uv")
@@ -415,20 +415,23 @@ print("✓ Model {model_name} is valid")
             base_name = onnx_file.replace('.onnx', '')
             
             # Skip if this model is already a quantized variant
-            if any(suffix in base_name.lower() for suffix in ['_q4', '_fp16', '_int8', '_uint8', '_bnb4']):
+            if any(suffix in base_name.lower() for suffix in ['_int8', '_uint8', '_bnb4', '_q4', '_q4f16']):
                 continue
             
-            # Check for q4 and fp16 variants
-            q4_file = f"{base_name}_q4.onnx"
-            fp16_file = f"{base_name}_fp16.onnx"
+            # Check for all quantization variants
+            variant_configs = [
+                ('_int8', 'INT8 quantized variant'),
+                ('_uint8', 'UINT8 quantized variant'),
+                ('_bnb4', 'BNB4 quantized variant'),
+                ('_q4', 'Q4 quantized variant'),
+                ('_q4f16', 'Q4F16 quantized variant')
+            ]
             
-            if q4_file not in existing_files:
-                missing_variants.append(q4_file)
-                tasks_preview.append(f"  • Generate {q4_file} (Q4 quantized variant)")
-            
-            if fp16_file not in existing_files:
-                missing_variants.append(fp16_file)
-                tasks_preview.append(f"  • Generate {fp16_file} (FP16 quantized variant)")
+            for suffix, description in variant_configs:
+                variant_file = f"{base_name}{suffix}.onnx"
+                if variant_file not in existing_files:
+                    missing_variants.append(variant_file)
+                    tasks_preview.append(f"  • Generate {variant_file} ({description})")
         
         print(f"\n{'='*80}")
         print(f"Model Binary Quantization Preview for: {repo_id}")
@@ -455,7 +458,7 @@ print("✓ Model {model_name} is valid")
             print(f"  1. Use uv to run operations with isolated dependencies from submodule's requirements.txt")
             print(f"  2. Identify base models (non-quantized variants)")  
             print(f"  3. Slim base models using onnxslim")
-            print(f"  4. Run quantization script with modes: q4, fp16")
+            print(f"  4. Run quantization script with modes: int8, uint8, bnb4, q4, q4f16")
             print(f"  5. Validate generated models with ONNX checker")
             print(f"  6. Test basic compatibility with Transformers.js")
             print(f"  7. Add {len(missing_variants)} new quantized models to repository")
