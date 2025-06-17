@@ -12,7 +12,7 @@ class ModelBinaryMigration(BaseMigration):
     """Migration for converting and quantizing ONNX model binaries"""
     
     # Define available quantization modes
-    QUANTIZATION_MODES = ("int8", "uint8", "bnb4", "q4", "q4f16")
+    QUANTIZATION_MODES = ("fp16", "q8", "int8", "uint8", "q4", "q4f16", "bnb4")
     
     def __init__(self, verbose: bool = False):
         super().__init__(verbose)
