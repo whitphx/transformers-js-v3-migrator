@@ -61,148 +61,167 @@ class ModelBinaryMigration(BaseMigration):
                 )
             
             
-            # Step 2: Create temporary directory for processing
-            with tempfile.TemporaryDirectory(prefix="model_quantization_") as temp_dir:
-                input_dir = os.path.join(temp_dir, "input")
-                output_dir = os.path.join(temp_dir, "output")
-                os.makedirs(input_dir, exist_ok=True)
-                os.makedirs(output_dir, exist_ok=True)
+            # Step 2: Get all base model files first
+            base_models = self._find_base_model_files(onnx_path)
+            
+            if not base_models:
+                self.logger.info(f"No base model files found in {repo_id}")
+                return MigrationResult(
+                    migration_type=self.migration_type,
+                    status=MigrationStatus.COMPLETED,
+                    changes_made=False,
+                    error_message="No base model files found for quantization"
+                )
+            
+            # Step 3: Process each base model file separately with its own temporary directory
+            all_quantization_results = {
+                "success": False,
+                "successful_modes": [],
+                "failed_modes": [],
+                "failure_logs": {}
+            }
+            all_modified_files = []
+            
+            for model_file in base_models:
+                # Get missing modes for this specific model
+                missing_modes = self._get_missing_quantization_modes(onnx_path, model_file)
                 
-                # Step 3: Process all base model files (slim then copy to input directory)
-                base_models = self._find_base_model_files(onnx_path)
+                if not missing_modes:
+                    self.logger.info(f"Model {model_file} already has all quantized variants")
+                    continue
                 
-                if not base_models:
-                    self.logger.info(f"No base model files found in {repo_id}")
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.COMPLETED,
-                        changes_made=False,
-                        error_message="No base model files found for quantization"
-                    )
+                self.logger.info(f"Model {model_file} missing quantization modes: {missing_modes}")
                 
-                # Process each base model file
-                all_missing_modes = set()
-                for model_file in base_models:
+                # Create separate temporary directory for this model
+                with tempfile.TemporaryDirectory(prefix=f"model_quantization_{model_file[:-5]}_") as temp_dir:
+                    input_dir = os.path.join(temp_dir, "input")
+                    output_dir = os.path.join(temp_dir, "output")
+                    os.makedirs(input_dir, exist_ok=True)
+                    os.makedirs(output_dir, exist_ok=True)
+                    
                     original_path = os.path.join(onnx_path, model_file)
                     slimmed_path = os.path.join(input_dir, model_file)
                     
                     # Slim the model before quantization
                     if not self._slim_model(original_path, slimmed_path, repo_id):
-                        return MigrationResult(
-                            migration_type=self.migration_type,
-                            status=MigrationStatus.FAILED,
-                            changes_made=False,
-                            error_message=f"Failed to slim {model_file}"
-                        )
+                        self.logger.error(f"Failed to slim {model_file}, skipping quantization for this model")
+                        continue
                     
                     self.logger.info(f"Slimmed and prepared model: {model_file}")
                     
-                    # Collect missing modes for this model
-                    missing_modes = self._get_missing_quantization_modes(onnx_path, model_file)
-                    all_missing_modes.update(missing_modes)
-                
-                # Step 4: Quantize slimmed models (only missing variants)
-                missing_modes = tuple(all_missing_modes)
-                quantization_result = self._quantize_models(input_dir, output_dir, repo_id, missing_modes)
-                
-                # Log quantization results
-                if quantization_result["successful_modes"]:
-                    self.logger.info(f"Successfully quantized modes: {quantization_result['successful_modes']}")
-                if quantization_result["failed_modes"]:
-                    self.logger.warning(f"Failed quantization modes: {quantization_result['failed_modes']}")
-                    for mode, error in quantization_result["failure_logs"].items():
-                        self.logger.debug(f"Failure details for {mode}: {error}")
-                
-                # Fail only if no modes succeeded at all
-                if not quantization_result["success"]:
-                    error_msg = f"All quantization modes failed. Failed modes: {quantization_result['failed_modes']}"
-                    if quantization_result["failure_logs"]:
-                        # Include first error as example
-                        first_error = list(quantization_result["failure_logs"].values())[0]
-                        error_msg += f"\nExample error: {first_error[:200]}..."
+                    # Quantize this specific model with its missing modes
+                    quantization_result = self._quantize_models(input_dir, output_dir, repo_id, missing_modes)
                     
+                    # Process successful quantized variants
+                    if quantization_result["success"] and os.path.exists(output_dir):
+                        # Step 4: Copy quantized variants to onnx directory for this model
+                        existing_files = set(os.listdir(onnx_path))
+                        model_modified_files = []
+                        validation_failed_models = []
+                        
+                        for item in os.listdir(output_dir):
+                            if item.endswith('.onnx'):
+                                src_path = os.path.join(output_dir, item)
+                                dst_path = os.path.join(onnx_path, item)
+                                
+                                # Validate the new model before copying - catch validation errors
+                                try:
+                                    if self._validate_single_model(src_path, item):
+                                        # Check if we're replacing an existing (invalid) file or adding a new one
+                                        if item in existing_files:
+                                            self.logger.info(f"Replacing invalid quantized model: {item}")
+                                        else:
+                                            self.logger.info(f"Adding new quantized model: {item}")
+                                        
+                                        shutil.copy2(src_path, dst_path)
+                                        model_modified_files.append(f"onnx/{item}")
+                                    else:
+                                        self.logger.warning(f"Post-conversion validation failed for quantized model: {item}")
+                                        validation_failed_models.append(item)
+                                except Exception as e:
+                                    # Catch any validation errors and continue with other models
+                                    error_msg = f"Validation error for {item}: {str(e)}"
+                                    self.logger.warning(f"Post-conversion validation error for quantized model: {item} - {error_msg}")
+                                    validation_failed_models.append(item)
+                        
+                        # Add this model's results to the overall results
+                        all_modified_files.extend(model_modified_files)
+                        
+                        # Log validation results for this model
+                        if validation_failed_models:
+                            self.logger.warning(f"Model {model_file}: Post-conversion validation failed for {len(validation_failed_models)} variants: {validation_failed_models}")
+                        if model_modified_files:
+                            self.logger.info(f"Model {model_file}: Post-conversion validation passed for {len(model_modified_files)} variants")
+                    
+                    # Aggregate quantization results
+                    if quantization_result["success"]:
+                        all_quantization_results["success"] = True
+                    all_quantization_results["successful_modes"].extend(quantization_result["successful_modes"])
+                    all_quantization_results["failed_modes"].extend(quantization_result["failed_modes"])
+                    all_quantization_results["failure_logs"].update(quantization_result["failure_logs"])
+                
+            # Use aggregated results for final processing
+            quantization_result = all_quantization_results
+            
+            # Log quantization results summary
+            if quantization_result["successful_modes"]:
+                self.logger.info(f"Successfully quantized modes: {quantization_result['successful_modes']}")
+            if quantization_result["failed_modes"]:
+                self.logger.warning(f"Failed quantization modes: {quantization_result['failed_modes']}")
+                for mode, error in quantization_result["failure_logs"].items():
+                    self.logger.debug(f"Failure details for {mode}: {error}")
+            
+            # Fail only if no modes succeeded at all
+            if not quantization_result["success"]:
+                error_msg = f"All quantization modes failed. Failed modes: {quantization_result['failed_modes']}"
+                if quantization_result["failure_logs"]:
+                    # Include first error as example
+                    first_error = list(quantization_result["failure_logs"].values())[0]
+                    error_msg += f"\nExample error: {first_error[:200]}..."
+                
+                return MigrationResult(
+                    migration_type=self.migration_type,
+                    status=MigrationStatus.FAILED,
+                    changes_made=False,
+                    error_message=error_msg
+                )
+            
+            # Process final results using all_modified_files
+            if all_modified_files:
+                self.logger.info(f"Successfully added {len(all_modified_files)} quantized models for {repo_id}")
+                
+                # Include information about any failed quantization modes
+                error_messages = []
+                if quantization_result["failed_modes"]:
+                    error_messages.append(f"Quantization failed for modes: {', '.join(quantization_result['failed_modes'])}")
+                
+                error_message = "; ".join(error_messages) if error_messages else None
+                
+                return MigrationResult(
+                    migration_type=self.migration_type,
+                    status=MigrationStatus.COMPLETED,
+                    changes_made=True,
+                    files_modified=all_modified_files,
+                    error_message=error_message
+                )
+            else:
+                # No models were successfully added
+                if quantization_result["successful_modes"]:
+                    # Quantization succeeded but all models failed validation
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.FAILED,
                         changes_made=False,
-                        error_message=error_msg
+                        error_message="All generated quantized models failed post-conversion validation"
                     )
-                
-                # Step 5: Copy quantized variants to onnx directory (new files and replacements for invalid files)
-                existing_files = set(os.listdir(onnx_path))
-                modified_files = []
-                validation_failed_models = []
-                
-                for item in os.listdir(output_dir):
-                    if item.endswith('.onnx'):
-                        src_path = os.path.join(output_dir, item)
-                        dst_path = os.path.join(onnx_path, item)
-                        
-                        # Validate the new model before copying - catch validation errors
-                        try:
-                            if self._validate_single_model(src_path, item):
-                                # Check if we're replacing an existing (invalid) file or adding a new one
-                                if item in existing_files:
-                                    self.logger.info(f"Replacing invalid quantized model: {item}")
-                                else:
-                                    self.logger.info(f"Adding new quantized model: {item}")
-                                
-                                shutil.copy2(src_path, dst_path)
-                                modified_files.append(f"onnx/{item}")
-                            else:
-                                self.logger.warning(f"Post-conversion validation failed for quantized model: {item}")
-                                validation_failed_models.append(item)
-                        except Exception as e:
-                            # Catch any validation errors and continue with other models
-                            error_msg = f"Validation error for {item}: {str(e)}"
-                            self.logger.warning(f"Post-conversion validation error for quantized model: {item} - {error_msg}")
-                            validation_failed_models.append(item)
-                
-                # Log validation results summary
-                if validation_failed_models:
-                    self.logger.warning(f"Post-conversion validation failed for {len(validation_failed_models)} models: {validation_failed_models}")
-                if modified_files:
-                    self.logger.info(f"Post-conversion validation passed for {len(modified_files)} models")
-                
-                
-                if modified_files:
-                    self.logger.info(f"Successfully added {len(modified_files)} quantized models for {repo_id}")
-                    
-                    # Include information about any failed quantization modes and validation failures
-                    error_messages = []
-                    if quantization_result["failed_modes"]:
-                        error_messages.append(f"Quantization failed for modes: {', '.join(quantization_result['failed_modes'])}")
-                    if validation_failed_models:
-                        error_messages.append(f"Post-conversion validation failed for: {', '.join(validation_failed_models)}")
-                    
-                    error_message = "; ".join(error_messages) if error_messages else None
-                    
+                else:
+                    # No new models were needed
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.COMPLETED,
-                        changes_made=True,
-                        files_modified=modified_files,
-                        error_message=error_message
+                        changes_made=False,
+                        error_message="No new quantized models were needed"
                     )
-                else:
-                    # Check if we had any quantized models generated but all failed validation
-                    total_generated = len(os.listdir(output_dir)) if os.path.exists(output_dir) else 0
-                    if total_generated > 0 and len(validation_failed_models) == total_generated:
-                        # All generated models failed validation
-                        return MigrationResult(
-                            migration_type=self.migration_type,
-                            status=MigrationStatus.FAILED,
-                            changes_made=False,
-                            error_message=f"All {total_generated} generated quantized models failed post-conversion validation"
-                        )
-                    else:
-                        # No new models were needed
-                        return MigrationResult(
-                            migration_type=self.migration_type,
-                            status=MigrationStatus.COMPLETED,
-                            changes_made=False,
-                            error_message="No new quantized models were needed"
-                        )
                     
         except Exception as e:
             error_msg = f"Error in model quantization for {repo_id}: {e}"
