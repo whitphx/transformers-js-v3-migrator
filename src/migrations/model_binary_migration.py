@@ -139,21 +139,25 @@ class ModelBinaryMigration(BaseMigration):
                         error_message=error_msg
                     )
                 
-                # Step 5: Copy only new quantized variants to onnx directory
+                # Step 5: Copy quantized variants to onnx directory (new files and replacements for invalid files)
                 existing_files = set(os.listdir(onnx_path))
                 modified_files = []
                 
                 for item in os.listdir(output_dir):
-                    if item.endswith('.onnx') and item not in existing_files:
-                        # Only copy files that don't already exist
+                    if item.endswith('.onnx'):
                         src_path = os.path.join(output_dir, item)
                         dst_path = os.path.join(onnx_path, item)
                         
                         # Validate the new model before copying
                         if self._validate_single_model(src_path, item):
+                            # Check if we're replacing an existing (invalid) file or adding a new one
+                            if item in existing_files:
+                                self.logger.info(f"Replacing invalid quantized model: {item}")
+                            else:
+                                self.logger.info(f"Adding new quantized model: {item}")
+                            
                             shutil.copy2(src_path, dst_path)
                             modified_files.append(f"onnx/{item}")
-                            self.logger.info(f"Added new quantized model: {item}")
                         else:
                             self.logger.warning(f"Skipping invalid quantized model: {item}")
                 
@@ -210,17 +214,16 @@ class ModelBinaryMigration(BaseMigration):
                     base_name.endswith(f"_{mode}") for mode in self.QUANTIZATION_MODES
                 )
                 
-                # Skip if this has "_quantized" or "_merged" suffix
+                # Skip if this has "_quantized" suffix
                 is_legacy_quantized = base_name.endswith("_quantized")
-                is_merged_model = base_name.endswith("_merged")
                 
-                if not is_quantized_variant and not is_legacy_quantized and not is_merged_model:
+                if not is_quantized_variant and not is_legacy_quantized:
                     base_models.append(filename)
         
         return sorted(base_models)
     
     def _get_missing_quantization_modes(self, onnx_path: str, base_model: str = "model.onnx") -> tuple:
-        """Get quantization modes that don't already exist for a specific base model"""
+        """Get quantization modes that don't already exist or are invalid for a specific base model"""
         existing_files = set(os.listdir(onnx_path))
         missing_modes = []
         
@@ -229,8 +232,20 @@ class ModelBinaryMigration(BaseMigration):
         
         for mode in self.QUANTIZATION_MODES:
             variant_file = f"{base_name}_{mode}.onnx"
+            
             if variant_file not in existing_files:
+                # File doesn't exist - need to generate
                 missing_modes.append(mode)
+                self.logger.debug(f"Missing quantized model file: {variant_file}")
+            else:
+                # File exists - validate it
+                variant_path = os.path.join(onnx_path, variant_file)
+                if not self._validate_single_model_isolated(variant_path, variant_file):
+                    # File exists but is invalid - need to regenerate
+                    missing_modes.append(mode)
+                    self.logger.warning(f"Invalid quantized model file found: {variant_file} - will regenerate")
+                else:
+                    self.logger.debug(f"Valid quantized model file found: {variant_file}")
         
         return tuple(missing_modes)
     
