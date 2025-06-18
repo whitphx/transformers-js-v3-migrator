@@ -192,7 +192,12 @@ class SessionManager:
         
         # If it's in global processed, we need to check the actual migration statuses
         # across all sessions to see if it's truly complete
-        return self._check_repo_completion_across_sessions(repo_id, current_mode)
+        is_complete = self._check_repo_completion_across_sessions(repo_id, current_mode)
+        
+        # Debug logging to understand why repos are being skipped
+        self.logger.debug(f"Repository {repo_id} completion check: mode={current_mode}, is_complete={is_complete}")
+        
+        return is_complete
     
     def _check_repo_completion_across_sessions(self, repo_id: str, current_mode: str) -> bool:
         """Check if a repo is fully completed across all sessions"""
@@ -228,16 +233,10 @@ class SessionManager:
             if status in [MigrationStatus.COMPLETED.value, MigrationStatus.SKIPPED.value]:
                 continue
             elif status in [MigrationStatus.DRY_RUN.value, MigrationStatus.LOCAL.value]:
-                # These statuses mean the repo can be re-processed in normal mode
-                if current_mode == "normal":
-                    return False
-                # For dry_run and local modes, if there's already a DRY_RUN/LOCAL, we can skip
-                elif current_mode in ["dry_run", "local"] and status == MigrationStatus.DRY_RUN.value:
-                    continue
-                elif current_mode == "local" and status == MigrationStatus.LOCAL.value:
-                    continue
-                else:
-                    return False
+                # DRY_RUN and LOCAL statuses mean the repo can always be re-processed
+                # LOCAL migrations never mark a repo as "complete" since no changes are pushed
+                # DRY_RUN migrations can always be re-run in normal mode
+                return False
             else:
                 # PENDING, IN_PROGRESS, FAILED - not complete
                 return False

@@ -14,11 +14,15 @@ class ModelBinaryMigration(BaseMigration):
     # Define available quantization modes
     QUANTIZATION_MODES = ("fp16", "q8", "int8", "uint8", "q4", "q4f16", "bnb4")
     
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, save_debug_models: bool = False, debug_models_dir: str = None):
         super().__init__(verbose)
         # Get the path to the transformers.js submodule
         self.project_root = Path(__file__).parent.parent.parent
         self.transformers_js_path = self.project_root / "transformers-js"
+        
+        # Debug options
+        self.save_debug_models = save_debug_models
+        self.debug_models_dir = debug_models_dir or os.path.join(self.project_root, "debug_models")
     
     @property
     def migration_type(self) -> MigrationType:
@@ -157,6 +161,10 @@ class ModelBinaryMigration(BaseMigration):
                         else:
                             self.logger.warning(f"Skipping invalid quantized model: {item}")
                 
+                # Debug: Save models for development/debugging if enabled
+                if self.save_debug_models and modified_files:
+                    self._save_debug_models(repo_path, repo_id, modified_files)
+                
                 # Step 6: Test models with Transformers.js (basic validation)
                 if modified_files and not self._test_models_with_transformers_js(onnx_path, repo_id):
                     self.logger.warning(f"Some models failed Transformers.js validation for {repo_id}")
@@ -180,10 +188,10 @@ class ModelBinaryMigration(BaseMigration):
                     
                     # Update modified_files to only include successfully validated models
                     if not modified_files:
-                        self.logger.warning(f"All quantized models failed Node.js validation for {repo_id}")
+                        self.logger.error(f"All quantized models failed Node.js validation for {repo_id}")
                         return MigrationResult(
                             migration_type=self.migration_type,
-                            status=MigrationStatus.COMPLETED,
+                            status=MigrationStatus.FAILED,
                             changes_made=False,
                             error_message="All quantized models failed Node.js validation"
                         )
@@ -605,7 +613,7 @@ print("✓ Model {model_name} is valid")
                         self.logger.debug(f"Validating {model_filename} with Node.js")
                         validation_result = self._run_nodejs_model_validation(
                             validation_env["validation_dir"], 
-                            validation_env["cache_dir"], 
+                            validation_env["model_cache_dir"],  # Use the full path to the repo directory
                             repo_id, 
                             model_filename
                         )
@@ -687,7 +695,8 @@ print("✓ Model {model_name} is valid")
             result.update({
                 "success": True,
                 "validation_dir": validation_project_dir,
-                "cache_dir": cache_dir
+                "cache_dir": cache_dir,
+                "model_cache_dir": model_cache_dir  # Add the full path to the specific repo
             })
             
             return result
@@ -697,21 +706,23 @@ print("✓ Model {model_name} is valid")
             return result
     
     
-    def _run_nodejs_model_validation(self, validation_dir: str, cache_dir: str, repo_id: str, model_filename: str):
+    def _run_nodejs_model_validation(self, validation_dir: str, model_cache_dir: str, repo_id: str, model_filename: str):
         """Run Node.js validation for a specific model using the independent validation project"""
         
-        # Determine task type and dtype from model filename
-        task_type = self._infer_task_type(repo_id)
+        # Extract dtype from model filename and infer task type
         dtype = self._extract_dtype_from_filename(model_filename)
+        task_type = self._infer_task_type(repo_id)
+        
+        # model_cache_dir contains the repo directory, we need the parent (base directory)
+        model_base_dir = os.path.dirname(model_cache_dir)
         
         # Set up environment variables for the validation script
         env = os.environ.copy()
         env.update({
-            'TASK_TYPE': task_type,
-            'REPO_ID': repo_id,
-            'MODEL_FILENAME': model_filename,
-            'CACHE_DIR': cache_dir,
-            'DTYPE': dtype
+            'MODEL_BASE_DIR': model_base_dir,
+            'MODEL_ID': repo_id,
+            'DTYPE': dtype,
+            'TASK_TYPE': task_type
         })
         
         # Run the validation script from the independent validation project
@@ -744,6 +755,84 @@ print("✓ Model {model_name} is valid")
             return 'bnb4'
         else:
             return 'fp32'
+    
+    def _save_debug_models(self, repo_path: str, repo_id: str, modified_files: list):
+        """Save quantized models to debug directory for development/testing"""
+        try:
+            # Create debug directory structure
+            debug_repo_dir = os.path.join(self.debug_models_dir, repo_id)
+            os.makedirs(debug_repo_dir, exist_ok=True)
+            
+            # Copy the entire repository structure
+            import shutil
+            for item in os.listdir(repo_path):
+                src = os.path.join(repo_path, item)
+                dst = os.path.join(debug_repo_dir, item)
+                
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    if os.path.exists(dst):
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
+            
+            
+            # Create a README for the debug directory
+            readme_content = f"""# Debug Models for {repo_id}
+
+This directory contains the quantized models generated during migration for debugging and development purposes.
+
+## Contents
+
+- All original repository files
+- Newly generated quantized models:
+"""
+            
+            for model_file in modified_files:
+                model_filename = os.path.basename(model_file)
+                readme_content += f"  - {model_file}\n"
+            
+            readme_content += f"""
+
+## Validation
+
+From the project root directory, test individual models:
+
+"""
+            
+            for model_file in modified_files:
+                model_filename = os.path.basename(model_file)
+                readme_content += f"""```bash
+cd validation
+npm run validate-cli -- --source-dir "../debug_models/{repo_id}" --repo-id "{repo_id}" --model-file "{model_filename}" --debug
+```
+
+"""
+            
+            readme_content += f"""
+## Alternative: Environment Variables
+
+```bash
+cd validation
+export SOURCE_DIR="../debug_models/{repo_id}"
+export REPO_ID="{repo_id}"
+export MODEL_FILENAME="your_model_file.onnx"
+export DEBUG=true
+npm run validate
+```
+
+Generated on: {os.popen('date').read().strip()}
+"""
+            
+            readme_path = os.path.join(debug_repo_dir, "README.md")
+            with open(readme_path, 'w') as f:
+                f.write(readme_content)
+            
+            self.logger.info(f"💾 Debug models saved to: {debug_repo_dir}")
+            self.logger.info(f"📖 See README.md in debug directory for validation commands")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to save debug models: {e}")
     
     def _infer_task_type(self, repo_id: str) -> str:
         """Infer the task type from repository ID - basic heuristic"""
