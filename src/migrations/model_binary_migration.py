@@ -30,7 +30,7 @@ class ModelBinaryMigration(BaseMigration):
         return f"Add missing quantized ONNX model variants ({modes_str}) for Transformers.js v3"
     
     def is_applicable(self, repo_path: str, repo_id: str) -> bool:
-        """Check if repository has base model files that need quantization"""
+        """Check if repository has base model files for quantization"""
         onnx_path = os.path.join(repo_path, "onnx")
         
         if not os.path.exists(onnx_path):
@@ -40,21 +40,10 @@ class ModelBinaryMigration(BaseMigration):
         base_models = self._find_base_model_files(onnx_path)
         
         if not base_models:
-            self.logger.info(f"No base model files found in {repo_id}")
+            self.logger.debug(f"No base model files found in {repo_id}")
             return False
         
-        # Check if any base model has missing quantized variants
-        has_missing_variants = False
-        for base_model in base_models:
-            missing_modes = self._get_missing_quantization_modes(onnx_path, base_model)
-            if missing_modes:
-                has_missing_variants = True
-                self.logger.info(f"Repository {repo_id} - {base_model} is missing quantized variants: {missing_modes}")
-        
-        if not has_missing_variants:
-            self.logger.info(f"Repository {repo_id} already has all quantized variants for all models")
-            return False
-        
+        self.logger.debug(f"Repository {repo_id} has {len(base_models)} base model files: {base_models}")
         return True
     
     def apply_migration(self, repo_path: str, repo_id: str, interactive: bool = True) -> MigrationResult:
@@ -142,33 +131,51 @@ class ModelBinaryMigration(BaseMigration):
                 # Step 5: Copy quantized variants to onnx directory (new files and replacements for invalid files)
                 existing_files = set(os.listdir(onnx_path))
                 modified_files = []
+                validation_failed_models = []
                 
                 for item in os.listdir(output_dir):
                     if item.endswith('.onnx'):
                         src_path = os.path.join(output_dir, item)
                         dst_path = os.path.join(onnx_path, item)
                         
-                        # Validate the new model before copying
-                        if self._validate_single_model(src_path, item):
-                            # Check if we're replacing an existing (invalid) file or adding a new one
-                            if item in existing_files:
-                                self.logger.info(f"Replacing invalid quantized model: {item}")
+                        # Validate the new model before copying - catch validation errors
+                        try:
+                            if self._validate_single_model(src_path, item):
+                                # Check if we're replacing an existing (invalid) file or adding a new one
+                                if item in existing_files:
+                                    self.logger.info(f"Replacing invalid quantized model: {item}")
+                                else:
+                                    self.logger.info(f"Adding new quantized model: {item}")
+                                
+                                shutil.copy2(src_path, dst_path)
+                                modified_files.append(f"onnx/{item}")
                             else:
-                                self.logger.info(f"Adding new quantized model: {item}")
-                            
-                            shutil.copy2(src_path, dst_path)
-                            modified_files.append(f"onnx/{item}")
-                        else:
-                            self.logger.warning(f"Skipping invalid quantized model: {item}")
+                                self.logger.warning(f"Post-conversion validation failed for quantized model: {item}")
+                                validation_failed_models.append(item)
+                        except Exception as e:
+                            # Catch any validation errors and continue with other models
+                            error_msg = f"Validation error for {item}: {str(e)}"
+                            self.logger.warning(f"Post-conversion validation error for quantized model: {item} - {error_msg}")
+                            validation_failed_models.append(item)
+                
+                # Log validation results summary
+                if validation_failed_models:
+                    self.logger.warning(f"Post-conversion validation failed for {len(validation_failed_models)} models: {validation_failed_models}")
+                if modified_files:
+                    self.logger.info(f"Post-conversion validation passed for {len(modified_files)} models")
                 
                 
                 if modified_files:
                     self.logger.info(f"Successfully added {len(modified_files)} quantized models for {repo_id}")
                     
-                    # Include information about any failed quantization modes in the result
-                    error_message = None
+                    # Include information about any failed quantization modes and validation failures
+                    error_messages = []
                     if quantization_result["failed_modes"]:
-                        error_message = f"Some quantization modes failed (expected): {', '.join(quantization_result['failed_modes'])}"
+                        error_messages.append(f"Quantization failed for modes: {', '.join(quantization_result['failed_modes'])}")
+                    if validation_failed_models:
+                        error_messages.append(f"Post-conversion validation failed for: {', '.join(validation_failed_models)}")
+                    
+                    error_message = "; ".join(error_messages) if error_messages else None
                     
                     return MigrationResult(
                         migration_type=self.migration_type,
@@ -178,12 +185,24 @@ class ModelBinaryMigration(BaseMigration):
                         error_message=error_message
                     )
                 else:
-                    return MigrationResult(
-                        migration_type=self.migration_type,
-                        status=MigrationStatus.COMPLETED,
-                        changes_made=False,
-                        error_message="No new quantized models were needed"
-                    )
+                    # Check if we had any quantized models generated but all failed validation
+                    total_generated = len(os.listdir(output_dir)) if os.path.exists(output_dir) else 0
+                    if total_generated > 0 and len(validation_failed_models) == total_generated:
+                        # All generated models failed validation
+                        return MigrationResult(
+                            migration_type=self.migration_type,
+                            status=MigrationStatus.FAILED,
+                            changes_made=False,
+                            error_message=f"All {total_generated} generated quantized models failed post-conversion validation"
+                        )
+                    else:
+                        # No new models were needed
+                        return MigrationResult(
+                            migration_type=self.migration_type,
+                            status=MigrationStatus.COMPLETED,
+                            changes_made=False,
+                            error_message="No new quantized models were needed"
+                        )
                     
         except Exception as e:
             error_msg = f"Error in model quantization for {repo_id}: {e}"
