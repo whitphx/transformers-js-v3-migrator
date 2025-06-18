@@ -21,6 +21,9 @@ class AIReadmeMigrator:
 
         try:
             self.logger.info(f"Calling AI service to migrate README for {repo_id}")
+            
+            # Initialize accumulated instructions for this migration (local variable)
+            accumulated_instructions = []
 
             # Create the migration prompt
             prompt = self._create_migration_prompt(content, repo_id)
@@ -68,7 +71,7 @@ class AIReadmeMigrator:
                             validation_result = True  # Override trivial detection
                         elif user_choice == "retry":
                             # User wants to retry with the LLM
-                            migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                            migrated_content, accumulated_instructions = self._retry_with_llm(content, migrated_content, repo_id, accumulated_instructions)
                             if not migrated_content:
                                 return None
                             validation_result = self._validate_migration(content, migrated_content)
@@ -89,7 +92,7 @@ class AIReadmeMigrator:
                             validation_result = True  # Override validation failure
                         elif user_choice == "retry":
                             # User wants to retry with the LLM
-                            migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                            migrated_content, accumulated_instructions = self._retry_with_llm(content, migrated_content, repo_id, accumulated_instructions)
                             if not migrated_content:
                                 return None
                             validation_result = self._validate_migration(content, migrated_content)
@@ -114,8 +117,8 @@ class AIReadmeMigrator:
                         return None  # Standard rejection, will be marked as completed/skipped
                     elif user_choice == "retry_llm":
                         self.logger.info(f"User requested LLM retry for {repo_id}")
-                        # Ask the LLM again with a retry prompt
-                        migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                        # Ask the LLM again with a retry prompt (pass accumulated instructions)
+                        migrated_content, accumulated_instructions = self._retry_with_llm(content, migrated_content, repo_id, accumulated_instructions)
                         if not migrated_content:
                             self.logger.error(f"LLM retry failed for {repo_id}")
                             return None
@@ -632,15 +635,31 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                 print("  r  = Ask LLM to try again")
                 print("  e  = Edit the content directly")
 
-    def _retry_with_llm(self, original: str, previous_attempt: str, repo_id: str) -> Optional[str]:
-        """Ask the LLM to try again with feedback about the previous attempt"""
+    def _retry_with_llm(self, original: str, previous_attempt: str, repo_id: str, accumulated_instructions: list = None) -> tuple[Optional[str], list]:
+        """Ask the LLM to try again with feedback about the previous attempt
+        
+        Returns:
+            tuple: (migrated_content, updated_accumulated_instructions)
+        """
         try:
             self.logger.info(f"Retrying LLM migration for {repo_id} with feedback")
 
+            # Initialize accumulated instructions if not provided
+            if accumulated_instructions is None:
+                accumulated_instructions = []
+
             # Get additional instructions from the user
             print(f"\n{'='*80}")
-            print(f"LLM RETRY for {repo_id}")
+            print(f"LLM RETRY #{len(accumulated_instructions) + 1} for {repo_id}")
             print(f"{'='*80}")
+            
+            # Show previous instructions if any
+            if accumulated_instructions:
+                print("Previous instructions:")
+                for i, instruction in enumerate(accumulated_instructions, 1):
+                    print(f"  {i}. {instruction}")
+                print()
+            
             print("You can provide additional instructions to help the LLM improve the result.")
             print("Examples:")
             print("  - Add more detailed code examples")
@@ -653,8 +672,12 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
             if not user_instructions:
                 user_instructions = "Try a different approach and make the changes more substantial and helpful"
 
-            # Create a retry prompt that includes the previous attempt and user instructions
-            retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id, user_instructions)
+            # Create updated instructions list (don't modify the input list)
+            updated_instructions = accumulated_instructions.copy()
+            updated_instructions.append(user_instructions)
+
+            # Create a retry prompt that includes the previous attempt and all accumulated instructions
+            retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id, updated_instructions)
 
             # Call Claude API with retry prompt
             response = self.client.messages.create(
@@ -672,7 +695,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
             new_migrated_content = response.content[0].text.strip()
 
             self.logger.info(f"LLM retry completed for {repo_id}")
-            return new_migrated_content
+            return new_migrated_content, updated_instructions
 
         except Exception as e:
             if self.verbose:
@@ -681,10 +704,22 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                 self.logger.debug(f"Full traceback:\n{traceback.format_exc()}")
             else:
                 self.logger.error(f"Error during LLM retry for {repo_id}: {e}")
-            return None
+            return None, accumulated_instructions
 
-    def _create_retry_prompt(self, original: str, previous_attempt: str, repo_id: str, user_instructions: str = "") -> str:
+    def _create_retry_prompt(self, original: str, previous_attempt: str, repo_id: str, user_instructions) -> str:
         """Create a retry prompt that asks the LLM to improve on the previous attempt"""
+        
+        # Handle both string and list inputs for backward compatibility
+        if isinstance(user_instructions, str):
+            instructions_text = user_instructions
+        elif isinstance(user_instructions, list):
+            if user_instructions:
+                instructions_text = "\n".join(f"{i+1}. {instruction}" for i, instruction in enumerate(user_instructions))
+            else:
+                instructions_text = "Try a different approach and make the changes more substantial and helpful"
+        else:
+            instructions_text = "Try a different approach and make the changes more substantial and helpful"
+            
         prompt = f"""You are retrying a README migration for a Transformers.js repository. The user was not satisfied with your previous attempt and wants you to try a different approach.
 
 ## CRITICAL REQUIREMENTS (same as before):
@@ -715,7 +750,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
 - Make sure code examples are complete and functional
 
 ## User's Additional Instructions:
-{user_instructions}
+{instructions_text}
 
 ## NEW MIGRATED README (output only this):"""
 
