@@ -114,12 +114,29 @@ class ModelBinaryMigration(BaseMigration):
                 
                 # Step 4: Quantize slimmed models (only missing variants)
                 missing_modes = tuple(all_missing_modes)
-                if not self._quantize_models(input_dir, output_dir, repo_id, missing_modes):
+                quantization_result = self._quantize_models(input_dir, output_dir, repo_id, missing_modes)
+                
+                # Log quantization results
+                if quantization_result["successful_modes"]:
+                    self.logger.info(f"Successfully quantized modes: {quantization_result['successful_modes']}")
+                if quantization_result["failed_modes"]:
+                    self.logger.warning(f"Failed quantization modes: {quantization_result['failed_modes']}")
+                    for mode, error in quantization_result["failure_logs"].items():
+                        self.logger.debug(f"Failure details for {mode}: {error}")
+                
+                # Fail only if no modes succeeded at all
+                if not quantization_result["success"]:
+                    error_msg = f"All quantization modes failed. Failed modes: {quantization_result['failed_modes']}"
+                    if quantization_result["failure_logs"]:
+                        # Include first error as example
+                        first_error = list(quantization_result["failure_logs"].values())[0]
+                        error_msg += f"\nExample error: {first_error[:200]}..."
+                    
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.FAILED,
                         changes_made=False,
-                        error_message="Model quantization failed"
+                        error_message=error_msg
                     )
                 
                 # Step 5: Copy only new quantized variants to onnx directory
@@ -149,7 +166,7 @@ class ModelBinaryMigration(BaseMigration):
                     
                     # Step 7: Ask for user confirmation of the results in interactive mode
                     if interactive:
-                        user_choice = self._confirm_results(onnx_path, repo_id, modified_files)
+                        user_choice = self._confirm_results(onnx_path, repo_id, modified_files, quantization_result)
                         if user_choice == "reject_skip":
                             # User doesn't like the results - remove the generated files and leave undone
                             self._cleanup_generated_files(onnx_path, modified_files)
@@ -181,11 +198,17 @@ class ModelBinaryMigration(BaseMigration):
                             )
                     
                     # User accepted or non-interactive mode
+                    # Include information about any failed quantization modes in the result
+                    error_message = None
+                    if quantization_result["failed_modes"]:
+                        error_message = f"Some quantization modes failed (expected): {', '.join(quantization_result['failed_modes'])}"
+                    
                     return MigrationResult(
                         migration_type=self.migration_type,
                         status=MigrationStatus.COMPLETED,
                         changes_made=True,
-                        files_modified=modified_files
+                        files_modified=modified_files,
+                        error_message=error_message
                     )
                 else:
                     return MigrationResult(
@@ -374,53 +397,98 @@ print("✓ Model {model_name} is valid")
             self.logger.error(f"Error in isolated validation for {model_name}: {e}")
             return False
     
-    def _quantize_models(self, input_folder: str, output_folder: str, repo_id: str, modes: tuple) -> bool:
-        """Quantize models using transformers.js quantization script from submodule"""
+    def _quantize_models(self, input_folder: str, output_folder: str, repo_id: str, modes: tuple) -> dict:
+        """Quantize models using transformers.js quantization script from submodule
+        
+        Returns:
+            dict: {
+                "success": bool,  # True if at least one mode succeeded
+                "successful_modes": list,  # List of modes that succeeded
+                "failed_modes": list,  # List of modes that failed
+                "failure_logs": dict,  # mode -> error message
+            }
+        """
+        result_summary = {
+            "success": False,
+            "successful_modes": [],
+            "failed_modes": [],
+            "failure_logs": {}
+        }
+        
         try:
             if not modes:
                 self.logger.info("No quantization modes needed, skipping quantization")
-                return True
+                result_summary["success"] = True
+                return result_summary
                 
             self.logger.info(f"Quantizing models from {input_folder} with modes: {modes}")
             
             # Verify the transformers.js submodule exists
             if not self.transformers_js_path.exists():
                 self.logger.error("transformers.js submodule not found. Please run 'git submodule update --init'")
-                return False
+                return result_summary
             
             # Verify requirements file exists
             requirements_file = self.transformers_js_path / "scripts" / "requirements.txt"
             if not requirements_file.exists():
                 self.logger.error(f"Requirements file not found at {requirements_file}")
-                return False
+                return result_summary
             
-            # Run the quantization script using uv with isolated dependencies
-            self.logger.info("Running quantization with isolated dependencies via uv")
+            # Process each quantization mode individually to handle failures gracefully
+            for mode in modes:
+                try:
+                    self.logger.info(f"Quantizing with mode: {mode}")
+                    
+                    # Build command for single mode
+                    cmd = [
+                        "uv", "run", 
+                        "--with-requirements", str(requirements_file),
+                        "python", "-m", "scripts.quantize",
+                        "--input_folder", input_folder,
+                        "--output_folder", output_folder,
+                        "--modes", mode
+                    ]
+                    
+                    result = subprocess.run(cmd, cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
+                    
+                    self.logger.info(f"✓ Successfully quantized with mode: {mode}")
+                    result_summary["successful_modes"].append(mode)
+                    
+                except subprocess.CalledProcessError as e:
+                    error_msg = f"Quantization failed for mode {mode}: {e.stderr}"
+                    if e.stdout:
+                        error_msg += f"\nStdout: {e.stdout}"
+                    
+                    self.logger.warning(f"⚠ Quantization mode {mode} failed (this may be expected for some models): {e.stderr}")
+                    result_summary["failed_modes"].append(mode)
+                    result_summary["failure_logs"][mode] = error_msg
+                    
+                    # Special handling for q4f16 which is known to fail sometimes
+                    if mode == "q4f16":
+                        self.logger.info("q4f16 quantization failure is expected for some models, continuing with other modes")
+                    
+                except Exception as e:
+                    error_msg = f"Unexpected error during {mode} quantization: {str(e)}"
+                    self.logger.warning(f"⚠ Quantization mode {mode} failed: {error_msg}")
+                    result_summary["failed_modes"].append(mode)
+                    result_summary["failure_logs"][mode] = error_msg
             
-            # Build command with only the needed modes
-            cmd = [
-                "uv", "run", 
-                "--with-requirements", str(requirements_file),
-                "python", "-m", "scripts.quantize",
-                "--input_folder", input_folder,
-                "--output_folder", output_folder,
-                "--modes"
-            ] + list(modes)
+            # Consider successful if at least one mode succeeded
+            if result_summary["successful_modes"]:
+                result_summary["success"] = True
+                self.logger.info(f"✓ Quantization completed for {repo_id}. Successful modes: {result_summary['successful_modes']}")
+                if result_summary["failed_modes"]:
+                    self.logger.info(f"Failed modes (expected for some models): {result_summary['failed_modes']}")
+            else:
+                self.logger.error(f"✗ All quantization modes failed for {repo_id}")
             
-            result = subprocess.run(cmd, cwd=str(self.transformers_js_path), capture_output=True, text=True, check=True)
+            return result_summary
             
-            self.logger.info("✓ Quantization completed via uv")
-            self.logger.info(f"✓ Successfully quantized models for {repo_id} with modes: {modes}")
-            return True
-            
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Quantization failed for {repo_id}: {e.stderr}")
-            if e.stdout:
-                self.logger.error(f"Quantization stdout: {e.stdout}")
-            return False
         except Exception as e:
-            self.logger.error(f"Error quantizing models for {repo_id}: {e}")
-            return False
+            error_msg = f"Error in quantization process for {repo_id}: {e}"
+            self.logger.error(error_msg)
+            result_summary["failure_logs"]["general"] = error_msg
+            return result_summary
     
     
     def _test_models_with_transformers_js(self, onnx_path: str, repo_id: str) -> bool:
@@ -569,13 +637,24 @@ print("✓ Model {model_name} is valid")
                     print("  nd = Skip and mark done (won't retry)")
                     print("  p  = Show preview again")
     
-    def _confirm_results(self, onnx_path: str, repo_id: str, modified_files: list) -> str:
+    def _confirm_results(self, onnx_path: str, repo_id: str, modified_files: list, quantization_result: dict = None) -> str:
         """Show the generated files and ask for user confirmation of the results"""
         
         print(f"\n{'='*80}")
         print(f"Model Quantization Results for: {repo_id}")
         print(f"{'='*80}")
-        print(f"Quantization completed successfully!")
+        
+        # Show quantization status if available
+        if quantization_result:
+            if quantization_result["successful_modes"]:
+                print(f"✓ Successful quantization modes: {', '.join(quantization_result['successful_modes'])}")
+            if quantization_result["failed_modes"]:
+                print(f"⚠ Failed quantization modes: {', '.join(quantization_result['failed_modes'])} (this may be expected)")
+                if "q4f16" in quantization_result["failed_modes"]:
+                    print("  Note: q4f16 failures are expected for some models")
+        else:
+            print(f"Quantization completed successfully!")
+        
         print(f"{'='*80}")
         
         print(f"\nGenerated files ({len(modified_files)} total):")
