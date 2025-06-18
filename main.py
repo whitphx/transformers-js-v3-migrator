@@ -22,11 +22,9 @@ def cli():
 @click.option('--resume', is_flag=True, help='Resume from existing session')
 @click.option('--non-interactive', is_flag=True, help='Run without user prompts (auto-approve AI changes)')
 @click.option('--verbose', is_flag=True, help='Enable verbose mode with detailed error tracebacks')
-@click.option('--save-debug-models', is_flag=True, help='Save quantized models to debug directory for development')
-@click.option('--debug-models-dir', help='Directory to save debug models (default: ./debug_models)')
 @click.option('--migration-types', multiple=True, help='Run only specific migration types (e.g., readme_samples, model_binaries)')
 @click.option('--list-migrations', is_flag=True, help='List available migration types and exit')
-def migrate(dry_run: bool, preview: bool, local: bool, limit: int, token: str, repo: str, repo_search: str, author: str, exclude_org: tuple, resume: bool, non_interactive: bool, verbose: bool, save_debug_models: bool, debug_models_dir: str, migration_types: tuple, list_migrations: bool):
+def migrate(dry_run: bool, preview: bool, local: bool, limit: int, token: str, repo: str, repo_search: str, author: str, exclude_org: tuple, resume: bool, non_interactive: bool, verbose: bool, migration_types: tuple, list_migrations: bool):
     """Run the migration process"""
     
     # Handle --list-migrations option
@@ -108,8 +106,6 @@ def migrate(dry_run: bool, preview: bool, local: bool, limit: int, token: str, r
         token=hf_token, 
         mode=mode, 
         verbose=verbose,
-        save_debug_models=save_debug_models,
-        debug_models_dir=debug_models_dir,
         migration_types_filter=list(migration_types) if migration_types else None
     )
     migrator.run_migration(
@@ -208,9 +204,8 @@ def status(session_id: str):
 @click.option('--migration-type', required=True, help='Migration type to test (use --list to see available)')
 @click.option('--list', 'list_types', is_flag=True, help='List available migration types')
 @click.option('--dry-run', is_flag=True, help='Run without making actual changes')
-@click.option('--save-debug-models', is_flag=True, help='Save quantized models for debugging')
 @click.option('--verbose', is_flag=True, help='Enable verbose output')
-def debug(repo: str, migration_type: str, list_types: bool, dry_run: bool, save_debug_models: bool, verbose: bool):
+def debug(repo: str, migration_type: str, list_types: bool, dry_run: bool, verbose: bool):
     """Debug/test specific migration types on a single repository"""
     
     # Handle --list option
@@ -232,7 +227,7 @@ def debug(repo: str, migration_type: str, list_types: bool, dry_run: bool, save_
             click.echo(f"   {description}")
         
         click.echo(f"\n💡 Debug Usage Example:")
-        click.echo(f"   python main.py debug --repo whitphx/dummy-transformerjs-model-000 --migration-type model_binaries --dry-run --save-debug-models")
+        click.echo(f"   python main.py debug --repo whitphx/dummy-transformerjs-model-000 --migration-type model_binaries --dry-run")
         click.echo("")
         return
     
@@ -263,7 +258,6 @@ def debug(repo: str, migration_type: str, list_types: bool, dry_run: bool, save_
     click.echo(f"📂 Repository: {repo}")
     click.echo(f"🔧 Migration: {migration_type}")
     click.echo(f"⚙️  Mode: {mode}")
-    click.echo(f"💾 Save debug models: {save_debug_models}")
     click.echo("=" * 40)
     click.echo("")
     
@@ -272,8 +266,6 @@ def debug(repo: str, migration_type: str, list_types: bool, dry_run: bool, save_
         token=hf_token,
         mode=mode,
         verbose=verbose,
-        save_debug_models=save_debug_models,
-        debug_models_dir="./debug_models",
         migration_types_filter=[migration_type]
     )
     

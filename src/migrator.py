@@ -12,13 +12,10 @@ import src.migrations
 
 class TransformersJSMigrator:
     def __init__(self, token: Optional[str] = None, mode: str = "normal", verbose: bool = False, 
-                 save_debug_models: bool = False, debug_models_dir: Optional[str] = None,
                  migration_types_filter: Optional[List[str]] = None):
         self.token = token
         self.mode = mode  # "normal", "dry_run", "preview", or "local"
         self.verbose = verbose
-        self.save_debug_models = save_debug_models
-        self.debug_models_dir = debug_models_dir
         self.migration_types_filter = migration_types_filter
         self.hub_client = HubClient(token)
         self.git_ops = GitOperations(token, verbose=verbose)
@@ -46,9 +43,6 @@ class TransformersJSMigrator:
         if self.migration_types_filter:
             self.logger.info(f"🎯 Migration types filter active: {', '.join(self.migration_types_filter)}")
         
-        # Log debug options
-        if self.save_debug_models:
-            self.logger.info(f"💾 Debug model saving enabled: {self.debug_models_dir}")
 
     def run_migration(self, limit: int = 10, exact_repo: Optional[str] = None,
                      repo_search: Optional[str] = None, author_filter: Optional[str] = None, 
@@ -208,15 +202,8 @@ class TransformersJSMigrator:
                         self.logger.info(f"Re-running {migration_type_name} for {repo_id} - previous was {existing_status}, now {self.mode}")
                     
                     try:
-                        # Create a new instance with debug options for this session
-                        if migration_class.migration_type.value == "model_binaries":
-                            migration = migration_class.__class__(
-                                verbose=self.verbose,
-                                save_debug_models=self.save_debug_models,
-                                debug_models_dir=self.debug_models_dir
-                            )
-                        else:
-                            migration = migration_class.__class__(verbose=self.verbose)
+                        # Create a new instance for this session
+                        migration = migration_class.__class__(verbose=self.verbose)
                         
                         if migration.is_applicable(repo_path, repo_id):
                             applicable_migrations.append(migration)
