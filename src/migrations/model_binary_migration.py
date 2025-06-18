@@ -19,6 +19,14 @@ class ModelBinaryMigration(BaseMigration):
         # Get the path to the transformers.js submodule
         self.project_root = Path(__file__).parent.parent.parent
         self.transformers_js_path = self.project_root / "transformers-js"
+        
+        # Track quantization details for PR description
+        self.quantization_details = {
+            "added_for_missing": [],     # Modes added because files were missing
+            "added_for_invalid": [],     # Modes added because files were invalid  
+            "removed_invalid": [],       # Modes removed because invalid files couldn't be regenerated
+            "models_processed": []       # List of base models that were processed
+        }
     
     @property
     def migration_type(self) -> MigrationType:
@@ -83,14 +91,21 @@ class ModelBinaryMigration(BaseMigration):
             all_modified_files = []
             
             for model_file in base_models:
-                # Get missing modes for this specific model
-                missing_modes = self._get_missing_quantization_modes(onnx_path, model_file)
+                # Get detailed information about missing and invalid modes for this specific model
+                mode_details = self._get_detailed_missing_quantization_modes(onnx_path, model_file)
+                missing_modes = mode_details["missing_modes"] + mode_details["invalid_modes"]
                 
                 if not missing_modes:
                     self.logger.info(f"Model {model_file} already has all quantized variants")
                     continue
                 
-                self.logger.info(f"Model {model_file} missing quantization modes: {missing_modes}")
+                # Track this model as being processed
+                self.quantization_details["models_processed"].append(model_file)
+                
+                self.logger.info(f"Model {model_file} missing modes: {mode_details['missing_modes']}, invalid modes: {mode_details['invalid_modes']}")
+                
+                # Store the original invalid modes to track which ones get removed later
+                original_invalid_modes = set(mode_details["invalid_modes"].copy())
                 
                 # Create separate temporary directory for this model
                 with tempfile.TemporaryDirectory(prefix=f"model_quantization_{model_file[:-5]}_") as temp_dir:
@@ -124,17 +139,35 @@ class ModelBinaryMigration(BaseMigration):
                                 src_path = os.path.join(output_dir, item)
                                 dst_path = os.path.join(onnx_path, item)
                                 
+                                # Extract mode from filename for tracking
+                                base_name = model_file[:-5] if model_file.endswith('.onnx') else model_file
+                                for mode in self.QUANTIZATION_MODES:
+                                    if item == f"{base_name}_{mode}.onnx":
+                                        current_mode = mode
+                                        break
+                                else:
+                                    continue  # Skip files that don't match expected pattern
+                                
                                 # Validate the new model before copying - catch validation errors
                                 try:
                                     if self._validate_single_model(src_path, item):
                                         # Check if we're replacing an existing (invalid) file or adding a new one
                                         if item in existing_files:
                                             self.logger.info(f"Replacing invalid quantized model: {item}")
+                                            # Track as added for invalid (successful replacement)
+                                            if current_mode not in self.quantization_details["added_for_invalid"]:
+                                                self.quantization_details["added_for_invalid"].append(f"{model_file}:{current_mode}")
                                         else:
                                             self.logger.info(f"Adding new quantized model: {item}")
+                                            # Track as added for missing
+                                            if current_mode not in self.quantization_details["added_for_missing"]:
+                                                self.quantization_details["added_for_missing"].append(f"{model_file}:{current_mode}")
                                         
                                         shutil.copy2(src_path, dst_path)
                                         model_modified_files.append(f"onnx/{item}")
+                                        
+                                        # Remove from original_invalid_modes since we successfully replaced it
+                                        original_invalid_modes.discard(current_mode)
                                     else:
                                         self.logger.warning(f"Post-conversion validation failed for quantized model: {item}")
                                         validation_failed_models.append(item)
@@ -146,6 +179,15 @@ class ModelBinaryMigration(BaseMigration):
                         
                         # Add this model's results to the overall results
                         all_modified_files.extend(model_modified_files)
+                        
+                        # Track any remaining invalid modes that couldn't be regenerated (need to be removed)
+                        for invalid_mode in original_invalid_modes:
+                            invalid_file = f"{model_file[:-5]}_{invalid_mode}.onnx"
+                            invalid_path = os.path.join(onnx_path, invalid_file)
+                            if os.path.exists(invalid_path):
+                                os.remove(invalid_path)
+                                self.quantization_details["removed_invalid"].append(f"{model_file}:{invalid_mode}")
+                                self.logger.warning(f"Removed invalid quantized model that couldn't be regenerated: {invalid_file}")
                         
                         # Log validation results for this model
                         if validation_failed_models:
@@ -233,6 +275,64 @@ class ModelBinaryMigration(BaseMigration):
                 error_message=error_msg
             )
     
+    def get_pr_description(self) -> str:
+        """Get the PR description with detailed quantization results"""
+        
+        # Build detailed quantization summary
+        summary_parts = []
+        
+        if self.quantization_details["models_processed"]:
+            summary_parts.append(f"**Models processed:** {', '.join(self.quantization_details['models_processed'])}")
+        
+        if self.quantization_details["added_for_missing"]:
+            missing_list = []
+            for entry in self.quantization_details["added_for_missing"]:
+                model, mode = entry.split(':', 1)
+                missing_list.append(f"  - `{model}`: {mode}")
+            summary_parts.append(f"**✅ Added quantization modes (missing files):**\n" + "\n".join(missing_list))
+        
+        if self.quantization_details["added_for_invalid"]:
+            invalid_list = []
+            for entry in self.quantization_details["added_for_invalid"]:
+                model, mode = entry.split(':', 1)
+                invalid_list.append(f"  - `{model}`: {mode}")
+            summary_parts.append(f"**🔄 Added quantization modes (replaced invalid files):**\n" + "\n".join(invalid_list))
+        
+        if self.quantization_details["removed_invalid"]:
+            removed_list = []
+            for entry in self.quantization_details["removed_invalid"]:
+                model, mode = entry.split(':', 1)
+                removed_list.append(f"  - `{model}`: {mode}")
+            summary_parts.append(f"**❌ Removed invalid quantization modes (regeneration failed):**\n" + "\n".join(removed_list))
+        
+        # Create the full PR description
+        description = f"""This automated migration updates the model repository for Transformers.js v3.
+
+## 🔧 Model Binary Migration Results
+
+{chr(10).join(summary_parts) if summary_parts else "No quantization changes were needed."}
+
+## 📋 Summary
+- **Migration type:** Model binaries quantization
+- **Purpose:** Ensure all required quantized model variants are available and valid for Transformers.js v3
+- **Quantization modes:** {', '.join(self.QUANTIZATION_MODES)}
+
+## ✅ What was done:
+1. **Validation:** Checked existing quantized model files for validity
+2. **Quantization:** Generated missing or invalid quantized variants using transformers.js quantization tools
+3. **Post-validation:** Verified all generated models load correctly with Transformers.js v3
+4. **Cleanup:** Removed any invalid models that couldn't be regenerated
+
+## 🔍 Please review:
+- Verify that the quantized models work correctly with your use case
+- Test the models in your application to ensure compatibility
+- Check that file sizes are reasonable for your deployment needs
+
+---
+🤖 Generated by transformers-js-v3-migrator"""
+
+        return description
+    
     def _find_base_model_files(self, onnx_path: str) -> list:
         """Find all base model files (without mode suffixes) in the onnx directory"""
         if not os.path.exists(onnx_path):
@@ -286,6 +386,38 @@ class ModelBinaryMigration(BaseMigration):
                     self.logger.debug(f"Valid quantized model file found: {variant_file}")
         
         return tuple(missing_modes)
+    
+    def _get_detailed_missing_quantization_modes(self, onnx_path: str, base_model: str = "model.onnx") -> dict:
+        """Get detailed information about missing and invalid quantization modes"""
+        existing_files = set(os.listdir(onnx_path))
+        result = {
+            "missing_modes": [],      # Modes where file doesn't exist
+            "invalid_modes": [],      # Modes where file exists but is invalid
+            "valid_modes": []         # Modes where file exists and is valid
+        }
+        
+        # Extract base name without .onnx extension
+        base_name = base_model[:-5] if base_model.endswith('.onnx') else base_model
+        
+        for mode in self.QUANTIZATION_MODES:
+            variant_file = f"{base_name}_{mode}.onnx"
+            
+            if variant_file not in existing_files:
+                # File doesn't exist - need to generate
+                result["missing_modes"].append(mode)
+                self.logger.debug(f"Missing quantized model file: {variant_file}")
+            else:
+                # File exists - validate it
+                variant_path = os.path.join(onnx_path, variant_file)
+                if not self._validate_single_model_isolated(variant_path, variant_file):
+                    # File exists but is invalid - need to regenerate
+                    result["invalid_modes"].append(mode)
+                    self.logger.warning(f"Invalid quantized model file found: {variant_file} - will regenerate")
+                else:
+                    result["valid_modes"].append(mode)
+                    self.logger.debug(f"Valid quantized model file found: {variant_file}")
+        
+        return result
     
     def _validate_onnx_models(self, onnx_path: str, repo_id: str) -> bool:
         """Validate only the base ONNX model files using isolated dependencies via uv"""
