@@ -43,15 +43,66 @@ class AIReadmeMigrator:
             # Validate the response
             validation_result = self._validate_migration(content, migrated_content)
             if validation_result == "trivial":
-                self.logger.info(f"AI README migration skipped for {repo_id} - only trivial changes")
-                return None  # Return None to indicate no changes needed (will be marked as SKIPPED)
+                self.logger.info(f"AI README migration detected trivial changes for {repo_id}")
+                # In interactive mode, we'll handle this in the confirmation loop
+                # In non-interactive mode, skip trivial changes
+                if not interactive:
+                    return None  # Return None to indicate no changes needed (will be marked as SKIPPED)
             elif not validation_result:
                 self.logger.error(f"AI README migration validation failed for {repo_id}")
-                return None
+                # In interactive mode, we'll handle this in the confirmation loop
+                # In non-interactive mode, skip failed validation
+                if not interactive:
+                    return None
 
             # Interactive mode: show changes and ask for confirmation
             if interactive:
                 while True:
+                    # Check if we need to handle validation issues interactively
+                    if validation_result == "trivial":
+                        user_choice = self._handle_trivial_changes_interactively(content, migrated_content, repo_id)
+                        if user_choice == "skip":
+                            return None
+                        elif user_choice == "proceed":
+                            # User wants to proceed with trivial changes
+                            validation_result = True  # Override trivial detection
+                        elif user_choice == "retry":
+                            # User wants to retry with the LLM
+                            migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                            if not migrated_content:
+                                return None
+                            validation_result = self._validate_migration(content, migrated_content)
+                            continue
+                        elif user_choice == "edit":
+                            # User wants to edit directly
+                            migrated_content = self._edit_content_directly(migrated_content, repo_id)
+                            if not migrated_content:
+                                return None
+                            validation_result = self._validate_migration(content, migrated_content)
+                            continue
+                    elif not validation_result:
+                        user_choice = self._handle_validation_failure_interactively(content, migrated_content, repo_id)
+                        if user_choice == "skip":
+                            return None
+                        elif user_choice == "proceed":
+                            # User wants to proceed despite validation failure
+                            validation_result = True  # Override validation failure
+                        elif user_choice == "retry":
+                            # User wants to retry with the LLM
+                            migrated_content = self._retry_with_llm(content, migrated_content, repo_id)
+                            if not migrated_content:
+                                return None
+                            validation_result = self._validate_migration(content, migrated_content)
+                            continue
+                        elif user_choice == "edit":
+                            # User wants to edit directly
+                            migrated_content = self._edit_content_directly(migrated_content, repo_id)
+                            if not migrated_content:
+                                return None
+                            validation_result = self._validate_migration(content, migrated_content)
+                            continue
+                    
+                    # Show changes and get confirmation
                     user_choice = self._show_changes_and_confirm(content, migrated_content, repo_id)
                     if user_choice == "accept":
                         break  # Continue with migration
@@ -68,6 +119,8 @@ class AIReadmeMigrator:
                         if not migrated_content:
                             self.logger.error(f"LLM retry failed for {repo_id}")
                             return None
+                        # Re-validate the new content
+                        validation_result = self._validate_migration(content, migrated_content)
                         # Continue the loop to show new changes
                         continue
                     elif user_choice == "edit_direct":
@@ -77,6 +130,8 @@ class AIReadmeMigrator:
                         if not migrated_content:
                             self.logger.info(f"User cancelled direct editing for {repo_id}")
                             return None
+                        # Re-validate the edited content
+                        validation_result = self._validate_migration(content, migrated_content)
                         # Continue the loop to show the edited changes
                         continue
                     else:
@@ -582,8 +637,24 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
         try:
             self.logger.info(f"Retrying LLM migration for {repo_id} with feedback")
 
-            # Create a retry prompt that includes the previous attempt
-            retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id)
+            # Get additional instructions from the user
+            print(f"\n{'='*80}")
+            print(f"LLM RETRY for {repo_id}")
+            print(f"{'='*80}")
+            print("You can provide additional instructions to help the LLM improve the result.")
+            print("Examples:")
+            print("  - Add more detailed code examples")
+            print("  - Include installation instructions")  
+            print("  - Fix the package name to @huggingface/transformers")
+            print("  - Add dtype configuration examples")
+            print("Press Enter to use default retry instructions, or type your custom instructions:")
+            
+            user_instructions = input("> ").strip()
+            if not user_instructions:
+                user_instructions = "Try a different approach and make the changes more substantial and helpful"
+
+            # Create a retry prompt that includes the previous attempt and user instructions
+            retry_prompt = self._create_retry_prompt(original, previous_attempt, repo_id, user_instructions)
 
             # Call Claude API with retry prompt
             response = self.client.messages.create(
@@ -600,16 +671,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
 
             new_migrated_content = response.content[0].text.strip()
 
-            # Validate the retry response
-            validation_result = self._validate_migration(original, new_migrated_content)
-            if validation_result == "trivial":
-                self.logger.info(f"LLM retry for {repo_id} resulted in trivial changes")
-                return None
-            elif not validation_result:
-                self.logger.error(f"LLM retry validation failed for {repo_id}")
-                return None
-
-            self.logger.info(f"LLM retry completed successfully for {repo_id}")
+            self.logger.info(f"LLM retry completed for {repo_id}")
             return new_migrated_content
 
         except Exception as e:
@@ -621,7 +683,7 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
                 self.logger.error(f"Error during LLM retry for {repo_id}: {e}")
             return None
 
-    def _create_retry_prompt(self, original: str, previous_attempt: str, repo_id: str) -> str:
+    def _create_retry_prompt(self, original: str, previous_attempt: str, repo_id: str, user_instructions: str = "") -> str:
         """Create a retry prompt that asks the LLM to improve on the previous attempt"""
         prompt = f"""You are retrying a README migration for a Transformers.js repository. The user was not satisfied with your previous attempt and wants you to try a different approach.
 
@@ -652,9 +714,76 @@ Respond with exactly one word: either "TRIVIAL" or "MEANINGFUL" based on whether
 - Ensure installation instructions are clear and prominent
 - Make sure code examples are complete and functional
 
+## User's Additional Instructions:
+{user_instructions}
+
 ## NEW MIGRATED README (output only this):"""
 
         return prompt
+
+    def _handle_trivial_changes_interactively(self, original: str, migrated: str, repo_id: str) -> str:
+        """Handle trivial changes interactively by asking the user what to do"""
+        print(f"\n{'='*80}")
+        print(f"TRIVIAL CHANGES DETECTED for {repo_id}")
+        print(f"{'='*80}")
+        print("The AI suggested changes, but they appear to be only trivial (whitespace/formatting).")
+        print("However, you can choose to proceed anyway or try a different approach.")
+        print(f"{'='*80}")
+        
+        # Show the diff
+        self._show_trivial_changes_diff(original, migrated)
+        
+        while True:
+            response = input("What would you like to do? [s/p/r/e] (s=skip, p=proceed anyway, r=retry LLM, e=edit): ").lower().strip()
+            
+            if response in ['s', 'skip']:
+                return "skip"
+            elif response in ['p', 'proceed']:
+                return "proceed"
+            elif response in ['r', 'retry']:
+                return "retry"
+            elif response in ['e', 'edit']:
+                return "edit"
+            else:
+                print("Please enter:")
+                print("  s = Skip this migration")
+                print("  p = Proceed with trivial changes")
+                print("  r = Ask LLM to try again")
+                print("  e = Edit the content directly")
+
+    def _handle_validation_failure_interactively(self, original: str, migrated: str, repo_id: str) -> str:
+        """Handle validation failure interactively by asking the user what to do"""
+        print(f"\n{'='*80}")
+        print(f"VALIDATION FAILURE for {repo_id}")
+        print(f"{'='*80}")
+        print("The AI suggested changes, but they failed validation checks.")
+        print("This could be due to length issues, missing required content, or format problems.")
+        print("You can choose to proceed anyway or try a different approach.")
+        print(f"{'='*80}")
+        
+        # Show what we have so far
+        print("\nGenerated content preview (first 500 chars):")
+        print("-" * 40)
+        print(migrated[:500] + ("..." if len(migrated) > 500 else ""))
+        print("-" * 40)
+        
+        while True:
+            response = input("What would you like to do? [s/p/r/e] (s=skip, p=proceed anyway, r=retry LLM, e=edit): ").lower().strip()
+            
+            if response in ['s', 'skip']:
+                return "skip"
+            elif response in ['p', 'proceed']:
+                return "proceed"
+            elif response in ['r', 'retry']:
+                return "retry"
+            elif response in ['e', 'edit']:
+                return "edit"
+            else:
+                print("Please enter:")
+                print("  s = Skip this migration")
+                print("  p = Proceed despite validation failure")
+                print("  r = Ask LLM to try again")
+                print("  e = Edit the content directly")
 
     def _edit_content_directly(self, content: str, repo_id: str) -> Optional[str]:
         """Allow user to edit the content directly using their preferred editor"""
