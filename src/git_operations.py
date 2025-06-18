@@ -83,6 +83,16 @@ class GitOperations:
             # Create simple commit message
             commit_message = migration_title
             
+            # Preview PR content if in interactive mode
+            if interactive:
+                self._preview_pr_content(repo_id, migration_title, migration_description, files_modified)
+                
+                # Ask for user confirmation
+                response = input("\n🤔 Do you want to create this pull request? (y/N): ").strip().lower()
+                if response not in ['y', 'yes']:
+                    self.logger.info("Pull request creation cancelled by user")
+                    return None
+            
             # Create commit and auto-create PR (HF Hub will create branch automatically)
             self.logger.info(f"Creating commit with PR for {migration_type_name} migration")
             
@@ -154,6 +164,28 @@ class GitOperations:
             else:
                 self.logger.error(f"Failed to upload changes for {repo_id}: {e}")
             return None  # Return None instead of raising to allow retry
+    
+    def _preview_pr_content(self, repo_id: str, title: str, description: str, files_modified: list):
+        """Preview the pull request content before creation"""
+        print("\n" + "="*80)
+        print(f"📋 PULL REQUEST PREVIEW for {repo_id}")
+        print("="*80)
+        
+        print(f"\n📝 TITLE:")
+        print(f"{title}")
+        
+        print(f"\n📄 DESCRIPTION:")
+        print("-" * 60)
+        # Add proper indentation for the description
+        for line in description.split('\n'):
+            print(line)
+        print("-" * 60)
+        
+        print(f"\n📁 FILES TO BE MODIFIED ({len(files_modified)} files):")
+        for file_path in sorted(files_modified):
+            print(f"  • {file_path}")
+        
+        print("\n" + "="*80)
 
     def cleanup_temp_directory(self, temp_path: str):
         """Clean up temporary working directory"""
