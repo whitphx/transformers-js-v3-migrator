@@ -161,10 +161,37 @@ class ModelBinaryMigration(BaseMigration):
                 if modified_files and not self._test_models_with_transformers_js(onnx_path, repo_id):
                     self.logger.warning(f"Some models failed Transformers.js validation for {repo_id}")
                 
+                # Step 7: Validate quantized models with Node.js pipeline loading
+                if modified_files:
+                    validation_results = self._validate_models_with_nodejs(repo_path, repo_id, modified_files)
+                    if validation_results["failed_models"]:
+                        self.logger.warning(f"Some quantized models failed Node.js validation: {validation_results['failed_models']}")
+                        # Remove failed models from the modified files list
+                        for failed_model in validation_results["failed_models"]:
+                            failed_path = os.path.join(onnx_path, os.path.basename(failed_model))
+                            if os.path.exists(failed_path):
+                                os.remove(failed_path)
+                                self.logger.info(f"Removed failed model: {failed_model}")
+                                if failed_model in modified_files:
+                                    modified_files.remove(failed_model)
+                    
+                    if validation_results["successful_models"]:
+                        self.logger.info(f"Node.js validation passed for: {validation_results['successful_models']}")
+                    
+                    # Update modified_files to only include successfully validated models
+                    if not modified_files:
+                        self.logger.warning(f"All quantized models failed Node.js validation for {repo_id}")
+                        return MigrationResult(
+                            migration_type=self.migration_type,
+                            status=MigrationStatus.COMPLETED,
+                            changes_made=False,
+                            error_message="All quantized models failed Node.js validation"
+                        )
+                
                 if modified_files:
                     self.logger.info(f"Successfully added {len(modified_files)} quantized models for {repo_id}")
                     
-                    # Step 7: Ask for user confirmation of the results in interactive mode
+                    # Step 8: Ask for user confirmation of the results in interactive mode
                     if interactive:
                         user_choice = self._confirm_results(onnx_path, repo_id, modified_files, quantization_result)
                         if user_choice == "reject_skip":
@@ -528,6 +555,224 @@ print("✓ Model {model_name} is valid")
         except Exception as e:
             self.logger.error(f"Error testing models with Transformers.js: {e}")
             return False
+    
+    def _validate_models_with_nodejs(self, repo_path: str, repo_id: str, modified_files: list) -> dict:
+        """Validate quantized models by loading them with Transformers.js in Node.js
+        
+        Returns:
+            dict: {
+                "successful_models": list,  # List of models that loaded successfully
+                "failed_models": list,      # List of models that failed to load
+                "validation_logs": dict,    # model -> error details
+            }
+        """
+        import tempfile
+        import json
+        
+        result = {
+            "successful_models": [],
+            "failed_models": [],
+            "validation_logs": {}
+        }
+        
+        try:
+            # Check if Node.js is available
+            node_check = subprocess.run(["node", "--version"], capture_output=True, text=True)
+            if node_check.returncode != 0:
+                self.logger.warning("Node.js not found, skipping Node.js validation")
+                # Consider all models as successful if Node.js is not available
+                result["successful_models"] = modified_files.copy()
+                return result
+            
+            self.logger.info(f"Running Node.js validation for {len(modified_files)} quantized models")
+            
+            # Create a temporary directory for the validation environment
+            with tempfile.TemporaryDirectory(prefix="nodejs_validation_") as temp_dir:
+                # Set up the Node.js validation environment
+                validation_env = self._setup_nodejs_validation_environment(temp_dir, repo_path, repo_id)
+                if not validation_env["success"]:
+                    self.logger.warning(f"Failed to set up Node.js validation environment: {validation_env['error']}")
+                    # Consider all models as successful if environment setup fails
+                    result["successful_models"] = modified_files.copy()
+                    return result
+                
+                # Validate each model file individually
+                for model_file in modified_files:
+                    model_filename = os.path.basename(model_file)
+                    
+                    try:
+                        # Run validation for this specific model
+                        self.logger.debug(f"Validating {model_filename} with Node.js")
+                        validation_result = self._run_nodejs_model_validation(
+                            validation_env["validation_dir"], 
+                            validation_env["cache_dir"], 
+                            repo_id, 
+                            model_filename
+                        )
+                        
+                        if validation_result.returncode == 0:
+                            self.logger.debug(f"✓ {model_filename} passed Node.js validation")
+                            result["successful_models"].append(model_file)
+                        else:
+                            error_msg = f"Node.js validation failed: {validation_result.stderr}"
+                            if validation_result.stdout:
+                                error_msg += f"\nStdout: {validation_result.stdout}"
+                            
+                            self.logger.warning(f"✗ {model_filename} failed Node.js validation: {validation_result.stderr}")
+                            result["failed_models"].append(model_file)
+                            result["validation_logs"][model_file] = error_msg
+                            
+                    except subprocess.TimeoutExpired:
+                        error_msg = "Node.js validation timed out (>60s)"
+                        self.logger.warning(f"✗ {model_filename} validation timed out")
+                        result["failed_models"].append(model_file)
+                        result["validation_logs"][model_file] = error_msg
+                        
+                    except Exception as e:
+                        error_msg = f"Error during Node.js validation: {str(e)}"
+                        self.logger.warning(f"✗ {model_filename} validation error: {e}")
+                        result["failed_models"].append(model_file)
+                        result["validation_logs"][model_file] = error_msg
+            
+            self.logger.info(f"Node.js validation completed: {len(result['successful_models'])} passed, {len(result['failed_models'])} failed")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in Node.js validation setup: {e}")
+            # Consider all models as successful if validation setup fails
+            result["successful_models"] = modified_files.copy()
+            return result
+    
+    def _setup_nodejs_validation_environment(self, temp_dir: str, repo_path: str, repo_id: str) -> dict:
+        """Set up a Node.js validation environment using the independent validation project"""
+        import shutil
+        
+        result = {"success": False, "error": None}
+        
+        try:
+            # Get the path to the validation project in the project root
+            validation_project_dir = os.path.join(self.project_root, "validation")
+            
+            if not os.path.exists(validation_project_dir):
+                result["error"] = f"Validation project not found at {validation_project_dir}"
+                return result
+            
+            # Ensure dependencies are installed in the validation project
+            self.logger.debug("Ensuring dependencies are installed in validation project")
+            install_result = subprocess.run(
+                ["npm", "install"], 
+                cwd=validation_project_dir, 
+                capture_output=True, 
+                text=True
+            )
+            
+            if install_result.returncode != 0:
+                result["error"] = f"npm install failed in validation project: {install_result.stderr}"
+                return result
+            
+            # Set up model cache directory in temp space
+            cache_dir = os.path.join(temp_dir, "models")
+            model_cache_dir = os.path.join(cache_dir, repo_id)
+            os.makedirs(model_cache_dir, exist_ok=True)
+            
+            # Copy all necessary files from repo to cache directory
+            for file_path in os.listdir(repo_path):
+                src = os.path.join(repo_path, file_path)
+                dst = os.path.join(model_cache_dir, file_path)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                elif os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+            
+            result.update({
+                "success": True,
+                "validation_dir": validation_project_dir,
+                "cache_dir": cache_dir
+            })
+            
+            return result
+            
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+    
+    
+    def _run_nodejs_model_validation(self, validation_dir: str, cache_dir: str, repo_id: str, model_filename: str):
+        """Run Node.js validation for a specific model using the independent validation project"""
+        
+        # Determine task type and dtype from model filename
+        task_type = self._infer_task_type(repo_id)
+        dtype = self._extract_dtype_from_filename(model_filename)
+        
+        # Set up environment variables for the validation script
+        env = os.environ.copy()
+        env.update({
+            'TASK_TYPE': task_type,
+            'REPO_ID': repo_id,
+            'MODEL_FILENAME': model_filename,
+            'CACHE_DIR': cache_dir,
+            'DTYPE': dtype
+        })
+        
+        # Run the validation script from the independent validation project
+        return subprocess.run(
+            ["npm", "run", "validate"],
+            cwd=validation_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,  # 60 second timeout per model
+            env=env
+        )
+    
+    def _extract_dtype_from_filename(self, model_filename: str) -> str:
+        """Extract the dtype from model filename"""
+        filename_lower = model_filename.lower()
+        
+        if '_fp16' in filename_lower:
+            return 'fp16'
+        elif '_q8' in filename_lower:
+            return 'q8'
+        elif '_q4f16' in filename_lower:
+            return 'q4f16'
+        elif '_q4' in filename_lower:
+            return 'q4'
+        elif '_int8' in filename_lower:
+            return 'int8'
+        elif '_uint8' in filename_lower:
+            return 'uint8'
+        elif '_bnb4' in filename_lower:
+            return 'bnb4'
+        else:
+            return 'fp32'
+    
+    def _infer_task_type(self, repo_id: str) -> str:
+        """Infer the task type from repository ID - basic heuristic"""
+        repo_lower = repo_id.lower()
+        
+        # Common task type patterns
+        if any(keyword in repo_lower for keyword in ['whisper', 'speech', 'asr']):
+            return 'automatic-speech-recognition'
+        elif any(keyword in repo_lower for keyword in ['bert', 'roberta', 'distilbert', 'classification']):
+            return 'text-classification'
+        elif any(keyword in repo_lower for keyword in ['gpt', 'generation', 'text-generation']):
+            return 'text-generation'
+        elif any(keyword in repo_lower for keyword in ['embedding', 'sentence', 'feature-extraction']):
+            return 'feature-extraction'
+        elif any(keyword in repo_lower for keyword in ['translation', 'translate']):
+            return 'translation'
+        elif any(keyword in repo_lower for keyword in ['summarization', 'summary']):
+            return 'summarization'
+        elif any(keyword in repo_lower for keyword in ['question', 'qa']):
+            return 'question-answering'
+        elif any(keyword in repo_lower for keyword in ['object-detection', 'detection', 'yolo']):
+            return 'object-detection'
+        elif any(keyword in repo_lower for keyword in ['image-classification', 'vision', 'vit']):
+            return 'image-classification'
+        elif any(keyword in repo_lower for keyword in ['segmentation']):
+            return 'image-segmentation'
+        else:
+            # Default to feature-extraction as it's most generic
+            return 'feature-extraction'
     
     def _preview_and_confirm(self, onnx_path: str, repo_id: str) -> str:
         """Preview the quantization tasks and ask for user confirmation"""

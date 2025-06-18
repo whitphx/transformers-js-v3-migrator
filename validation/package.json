@@ -1,0 +1,24 @@
+{
+  "name": "transformers-js-model-validation",
+  "version": "1.0.0",
+  "description": "Node.js validation utilities for Transformers.js quantized models",
+  "type": "module",
+  "main": "src/validate-model.js",
+  "scripts": {
+    "validate": "node src/validate-model.js",
+    "install-deps": "npm install",
+    "test": "node src/test-validation.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "keywords": [
+    "transformers",
+    "onnx",
+    "quantization",
+    "validation",
+    "machine-learning"
+  ],
+  "author": "Transformers.js Migration Tool",
+  "license": "MIT"
+}
