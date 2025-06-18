@@ -574,9 +574,6 @@ print("✓ Model {model_name} is valid")
                 "validation_logs": dict,    # model -> error details
             }
         """
-        import tempfile
-        import json
-        
         result = {
             "successful_models": [],
             "failed_models": [],
@@ -594,75 +591,11 @@ print("✓ Model {model_name} is valid")
             
             self.logger.info(f"Running Node.js validation for {len(modified_files)} quantized models")
             
-            # Create a temporary directory for the validation environment
-            with tempfile.TemporaryDirectory(prefix="nodejs_validation_") as temp_dir:
-                # Set up the Node.js validation environment
-                validation_env = self._setup_nodejs_validation_environment(temp_dir, repo_path, repo_id)
-                if not validation_env["success"]:
-                    self.logger.warning(f"Failed to set up Node.js validation environment: {validation_env['error']}")
-                    # Consider all models as successful if environment setup fails
-                    result["successful_models"] = modified_files.copy()
-                    return result
-                
-                # Validate each model file individually
-                for model_file in modified_files:
-                    model_filename = os.path.basename(model_file)
-                    
-                    try:
-                        # Run validation for this specific model
-                        self.logger.debug(f"Validating {model_filename} with Node.js")
-                        validation_result = self._run_nodejs_model_validation(
-                            validation_env["validation_dir"], 
-                            validation_env["model_cache_dir"],  # Use the full path to the repo directory
-                            repo_id, 
-                            model_filename
-                        )
-                        
-                        if validation_result.returncode == 0:
-                            self.logger.debug(f"✓ {model_filename} passed Node.js validation")
-                            result["successful_models"].append(model_file)
-                        else:
-                            error_msg = f"Node.js validation failed: {validation_result.stderr}"
-                            if validation_result.stdout:
-                                error_msg += f"\nStdout: {validation_result.stdout}"
-                            
-                            self.logger.warning(f"✗ {model_filename} failed Node.js validation: {validation_result.stderr}")
-                            result["failed_models"].append(model_file)
-                            result["validation_logs"][model_file] = error_msg
-                            
-                    except subprocess.TimeoutExpired:
-                        error_msg = "Node.js validation timed out (>60s)"
-                        self.logger.warning(f"✗ {model_filename} validation timed out")
-                        result["failed_models"].append(model_file)
-                        result["validation_logs"][model_file] = error_msg
-                        
-                    except Exception as e:
-                        error_msg = f"Error during Node.js validation: {str(e)}"
-                        self.logger.warning(f"✗ {model_filename} validation error: {e}")
-                        result["failed_models"].append(model_file)
-                        result["validation_logs"][model_file] = error_msg
-            
-            self.logger.info(f"Node.js validation completed: {len(result['successful_models'])} passed, {len(result['failed_models'])} failed")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error in Node.js validation setup: {e}")
-            # Consider all models as successful if validation setup fails
-            result["successful_models"] = modified_files.copy()
-            return result
-    
-    def _setup_nodejs_validation_environment(self, temp_dir: str, repo_path: str, repo_id: str) -> dict:
-        """Set up a Node.js validation environment using the independent validation project"""
-        import shutil
-        
-        result = {"success": False, "error": None}
-        
-        try:
-            # Get the path to the validation project in the project root
+            # Get the path to the validation project
             validation_project_dir = os.path.join(self.project_root, "validation")
-            
             if not os.path.exists(validation_project_dir):
-                result["error"] = f"Validation project not found at {validation_project_dir}"
+                self.logger.warning(f"Validation project not found at {validation_project_dir}, skipping validation")
+                result["successful_models"] = modified_files.copy()
                 return result
             
             # Ensure dependencies are installed in the validation project
@@ -675,58 +608,84 @@ print("✓ Model {model_name} is valid")
             )
             
             if install_result.returncode != 0:
-                result["error"] = f"npm install failed in validation project: {install_result.stderr}"
+                self.logger.warning(f"npm install failed in validation project: {install_result.stderr}")
+                result["successful_models"] = modified_files.copy()
                 return result
             
-            # Set up model cache directory in temp space
-            cache_dir = os.path.join(temp_dir, "models")
-            model_cache_dir = os.path.join(cache_dir, repo_id)
-            os.makedirs(model_cache_dir, exist_ok=True)
+            # Validate each model file individually
+            for model_file in modified_files:
+                model_filename = os.path.basename(model_file)
+                
+                try:
+                    # Run validation for this specific model
+                    self.logger.debug(f"Validating {model_filename} with Node.js")
+                    validation_result = self._run_nodejs_model_validation(
+                        validation_project_dir,
+                        repo_path,  # Pass the full repo path directly
+                        model_filename
+                    )
+                    
+                    if validation_result.returncode == 0:
+                        self.logger.debug(f"✓ {model_filename} passed Node.js validation")
+                        result["successful_models"].append(model_file)
+                    else:
+                        # Capture both stderr and stdout for better error details
+                        error_parts = []
+                        if validation_result.stderr and validation_result.stderr.strip():
+                            error_parts.append(f"Stderr: {validation_result.stderr.strip()}")
+                        if validation_result.stdout and validation_result.stdout.strip():
+                            error_parts.append(f"Stdout: {validation_result.stdout.strip()}")
+                        
+                        error_msg = "\n".join(error_parts) if error_parts else f"Process exited with code {validation_result.returncode}"
+                        
+                        self.logger.warning(f"✗ {model_filename} failed Node.js validation:")
+                        self.logger.warning(f"   {error_msg}")
+                        result["failed_models"].append(model_file)
+                        result["validation_logs"][model_file] = error_msg
+                        
+                except subprocess.TimeoutExpired:
+                    error_msg = "Node.js validation timed out (>60s)"
+                    self.logger.warning(f"✗ {model_filename} validation timed out")
+                    result["failed_models"].append(model_file)
+                    result["validation_logs"][model_file] = error_msg
+                    
+                except Exception as e:
+                    error_msg = f"Error during Node.js validation: {str(e)}"
+                    self.logger.warning(f"✗ {model_filename} validation error: {e}")
+                    result["failed_models"].append(model_file)
+                    result["validation_logs"][model_file] = error_msg
             
-            # Copy all necessary files from repo to cache directory
-            for file_path in os.listdir(repo_path):
-                src = os.path.join(repo_path, file_path)
-                dst = os.path.join(model_cache_dir, file_path)
-                if os.path.isfile(src):
-                    shutil.copy2(src, dst)
-                elif os.path.isdir(src):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-            
-            result.update({
-                "success": True,
-                "validation_dir": validation_project_dir,
-                "cache_dir": cache_dir,
-                "model_cache_dir": model_cache_dir  # Add the full path to the specific repo
-            })
-            
+            self.logger.info(f"Node.js validation completed: {len(result['successful_models'])} passed, {len(result['failed_models'])} failed")
             return result
             
         except Exception as e:
-            result["error"] = str(e)
+            self.logger.error(f"Error in Node.js validation: {e}")
+            # Consider all models as successful if validation setup fails
+            result["successful_models"] = modified_files.copy()
             return result
     
     
-    def _run_nodejs_model_validation(self, validation_dir: str, model_cache_dir: str, repo_id: str, model_filename: str):
+    
+    def _run_nodejs_model_validation(self, validation_dir: str, model_path: str, model_filename: str):
         """Run Node.js validation for a specific model using the independent validation project"""
+        import json
         
-        # Extract dtype from model filename and infer task type
+        # Extract dtype from model filename and infer task type from path
         dtype = self._extract_dtype_from_filename(model_filename)
+        # Extract repo_id from model_path for task type inference
+        repo_id = os.path.basename(model_path)
         task_type = self._infer_task_type(repo_id)
-        
-        # model_cache_dir contains the repo directory, we need the parent (base directory)
-        model_base_dir = os.path.dirname(model_cache_dir)
         
         # Set up environment variables for the validation script
         env = os.environ.copy()
         env.update({
-            'MODEL_BASE_DIR': model_base_dir,
-            'MODEL_ID': repo_id,
+            'MODEL_PATH': model_path,
             'DTYPE': dtype,
             'TASK_TYPE': task_type
         })
         
         # Run the validation script from the independent validation project
-        return subprocess.run(
+        subprocess_result = subprocess.run(
             ["npm", "run", "validate"],
             cwd=validation_dir,
             capture_output=True,
@@ -734,6 +693,45 @@ print("✓ Model {model_name} is valid")
             timeout=60,  # 60 second timeout per model
             env=env
         )
+        
+        # Parse the validation result from the last line of stdout
+        try:
+            stdout_lines = subprocess_result.stdout.strip().split('\n')
+            result_line = None
+            
+            # Look for VALIDATION_RESULT: in stdout lines
+            for line in reversed(stdout_lines):
+                if line.startswith('VALIDATION_RESULT:'):
+                    result_line = line
+                    break
+            
+            if result_line:
+                json_str = result_line[len('VALIDATION_RESULT:'):]
+                validation_result = json.loads(json_str)
+                
+                # Return a modified subprocess result with success based on stdout content
+                class ValidationResult:
+                    def __init__(self, subprocess_result, validation_success, validation_data):
+                        self.returncode = 0 if validation_success else 1  # Override return code
+                        self.stdout = subprocess_result.stdout
+                        self.stderr = subprocess_result.stderr
+                        self.validation_success = validation_success
+                        self.validation_data = validation_data
+                
+                return ValidationResult(
+                    subprocess_result, 
+                    validation_result.get('success', False),
+                    validation_result
+                )
+            else:
+                # No validation result found in stdout, fall back to subprocess result
+                self.logger.warning(f"No validation result found in stdout for {model_filename}")
+                return subprocess_result
+                
+        except (json.JSONDecodeError, IndexError) as e:
+            # If we can't parse the result, fall back to subprocess result
+            self.logger.warning(f"Could not parse validation result from stdout: {e}")
+            return subprocess_result
     
     def _extract_dtype_from_filename(self, model_filename: str) -> str:
         """Extract the dtype from model filename"""

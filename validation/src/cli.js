@@ -18,14 +18,9 @@ const argv = yargs(hideBin(process.argv))
     .usage('🔍 Transformers.js Model Validator CLI\n\nUsage: $0 [options]')
     .help('help')
     .alias('help', 'h')
-    .option('model-base-dir', {
+    .option('model-path', {
         type: 'string',
-        describe: 'Base directory containing model repositories',
-        demandOption: true
-    })
-    .option('model-id', {
-        type: 'string',
-        describe: 'Model ID (e.g., "Xenova/whisper-tiny.en")',
+        describe: 'Full path to the model directory',
         demandOption: true
     })
     .option('dtype', {
@@ -50,8 +45,7 @@ function runValidation(config) {
     // Set up environment variables
     const env = {
         ...process.env,
-        MODEL_BASE_DIR: config.modelBaseDir,
-        MODEL_ID: config.modelId,
+        MODEL_PATH: config.modelPath,
         DTYPE: config.dtype,
         TASK_TYPE: config.taskType
     };
@@ -61,8 +55,7 @@ function runValidation(config) {
     }
     
     console.log(`🚀 Starting validation...`);
-    console.log(`📂 Model base directory: ${config.modelBaseDir}`);
-    console.log(`🆔 Model ID: ${config.modelId}`);
+    console.log(`📁 Model path: ${config.modelPath}`);
     console.log(`🏷️  Dtype: ${config.dtype}`);
     console.log(`📁 Task type: ${config.taskType}`);
     console.log('');

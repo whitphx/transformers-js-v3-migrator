@@ -13,17 +13,15 @@ env.allowRemoteModels = false;
  * Validation script for Transformers.js quantized models
  *
  * Environment Variables:
- * - MODEL_BASE_DIR: Base directory containing model repositories
- * - MODEL_ID: The model ID (e.g., 'Xenova/whisper-tiny.en')
+ * - MODEL_PATH: Full path to the model directory
  * - DTYPE: The quantization type (e.g., 'fp32', 'fp16', 'q8', 'uint8')
- * - TASK_TYPE: The pipeline task type (auto-detected)
+ * - TASK_TYPE: The pipeline task type
  * - DEBUG: Enable debug mode for development
  */
 
 // Configuration from environment variables
 const config = {
-    modelBaseDir: process.env.MODEL_BASE_DIR,
-    modelId: process.env.MODEL_ID,
+    modelPath: process.env.MODEL_PATH,
     dtype: process.env.DTYPE,
     taskType: process.env.TASK_TYPE,
     debug: process.env.DEBUG === 'true' || process.env.DEBUG === '1'
@@ -34,38 +32,39 @@ const logLevel = config.debug ? 'debug' : 'info';
 const logger = winston.createLogger({
     level: logLevel,
     format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
+        winston.format.simple()  // Remove colorize for better subprocess capture
     ),
     transports: [
-        new winston.transports.Console()
+        new winston.transports.Console({
+            stderrLevels: ['error']  // Send errors to stderr, info/debug to stdout
+        })
     ]
 });
 
+// Write validation result to stdout as the last line
+function writeResult(result) {
+    console.log(`VALIDATION_RESULT:${JSON.stringify(result)}`);
+}
+
 // Validate required configuration
 function validateConfig() {
-    const required = ['modelBaseDir', 'modelId', 'dtype', 'taskType'];
+    const required = ['modelPath', 'dtype', 'taskType'];
     const missing = required.filter(key => !config[key]);
 
     if (missing.length > 0) {
         logger.error(`❌ Missing: ${missing.map(k => k.toUpperCase()).join(', ')}`);
+        writeResult({ success: false, error: `Missing required parameters: ${missing.join(', ')}` });
         process.exit(1);
     }
 
-    if (!existsSync(config.modelBaseDir)) {
-        logger.error(`❌ Directory not found: ${config.modelBaseDir}`);
+    if (!existsSync(config.modelPath)) {
+        logger.error(`❌ Model directory not found: ${config.modelPath}`);
+        writeResult({ success: false, error: `Model directory not found: ${config.modelPath}` });
         process.exit(1);
     }
 
-    const modelDir = join(config.modelBaseDir, config.modelId);
-    if (!existsSync(modelDir)) {
-        logger.error(`❌ Model not found: ${modelDir}`);
-        process.exit(1);
-    }
-
-    logger.info(`🔍 Validating ${config.modelId} (${config.dtype})`);
-    logger.debug(`📂 Model base directory: ${config.modelBaseDir}`);
-    logger.debug(`📁 Full model path: ${modelDir}`);
+    logger.info(`🔍 Validating ${config.modelPath} (${config.dtype})`);
+    logger.debug(`📁 Model path: ${config.modelPath}`);
     logger.debug(`📋 Task type: ${config.taskType}`);
 }
 
@@ -73,19 +72,23 @@ async function validateModel() {
     try {
         validateConfig();
 
-        // Set the model base directory as the local model path
-        env.localModelPath = config.modelBaseDir;
-        logger.debug(`🔧 Set env.localModelPath to: ${env.localModelPath}`);
-
-        // Create pipeline with specified dtype
+        // Create pipeline with full model path and specified dtype
         logger.debug(`⏳ Loading pipeline with dtype: ${config.dtype}`);
-        const pipe = await pipeline(config.taskType, config.modelId, {
+        const pipe = await pipeline(config.taskType, config.modelPath, {
             dtype: config.dtype,
             device: 'cpu',
             local_files_only: true
         });
 
-        logger.info(`✅ Validation passed for ${config.modelId} (${config.dtype})`);
+        logger.info(`✅ Validation passed for ${config.modelPath} (${config.dtype})`);
+        
+        // Write success result to stdout
+        writeResult({ 
+            success: true, 
+            modelPath: config.modelPath, 
+            dtype: config.dtype,
+            taskType: config.taskType
+        });
         
         // Skip cleanup to avoid ONNX runtime mutex issues
         // The validation succeeded, so we can exit immediately
@@ -94,6 +97,15 @@ async function validateModel() {
     } catch (error) {
         logger.error(`❌ Model validation failed: ${error.message}`);
         logger.debug('📋 Error details:', error);
+        
+        // Write failure result to stdout
+        writeResult({ 
+            success: false, 
+            error: error.message,
+            modelPath: config.modelPath, 
+            dtype: config.dtype 
+        });
+        
         process.exit(1);
     }
 }
@@ -101,6 +113,12 @@ async function validateModel() {
 // Handle unhandled errors
 process.on('unhandledRejection', (error) => {
     logger.error('💥 Unhandled error in validation:', error);
+    writeResult({ 
+        success: false, 
+        error: `Unhandled error: ${error.message}`,
+        modelPath: config.modelPath, 
+        dtype: config.dtype 
+    });
     process.exit(1);
 });
 
